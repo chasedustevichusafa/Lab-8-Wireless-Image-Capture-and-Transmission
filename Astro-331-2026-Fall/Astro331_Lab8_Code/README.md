@@ -4,6 +4,15 @@ Upload this project to use the GCS **Remote Files** tab. Labs 4 and 5 are left
 unchanged. This first milestone downloads existing files; it does not yet command
 camera capture or provide live preview.
 
+## Download this project on Windows
+
+In this repository's **Actions** tab, open **Download Lab 8 firmware**, then open
+its latest successful run. Download **KestrelSAT-Lab8-Firmware** under Artifacts.
+Sign into GitHub to download artifacts. Extract the ZIP and open its
+`KestrelSAT-Lab8` folder in PlatformIO; `platformio.ini` is directly inside it.
+This small artifact contains only this project. Its source files are verified by
+compressing/extracting them and comparing their checksums on a Windows runner.
+
 ## Wiring and build
 
 The configuration deliberately retains the working lab board identifier

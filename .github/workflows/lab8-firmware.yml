@@ -1,0 +1,46 @@
+name: Download Lab 8 firmware
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feature/remote-files']
+    paths:
+      - 'Astro-331-2026-Fall/Astro331_Lab8_Code/**'
+      - '.github/workflows/lab8-firmware.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package only the PlatformIO project
+        shell: pwsh
+        run: |
+          $project = 'Astro-331-2026-Fall/Astro331_Lab8_Code'
+          $destination = 'package/KestrelSAT-Lab8'
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          foreach ($name in @('platformio.ini', 'README.md', 'include', 'src', 'test')) {
+            Copy-Item (Join-Path $project $name) $destination -Recurse
+          }
+          $files = Get-ChildItem $destination -Recurse -File
+          if ($files.Count -ne 6) { throw "Unexpected project file count: $($files.Count)" }
+          Compress-Archive -Path $destination -DestinationPath validation.zip
+          Expand-Archive -Path validation.zip -DestinationPath extracted
+          foreach ($file in $files) {
+            $relative = [IO.Path]::GetRelativePath((Resolve-Path 'package').Path, $file.FullName)
+            $restored = Join-Path 'extracted' $relative
+            if ((Get-FileHash $file.FullName).Hash -ne (Get-FileHash $restored).Hash) {
+              throw "ZIP round-trip changed $relative"
+            }
+          }
+          Write-Host 'Windows ZIP extraction and all source file checksums passed.'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KestrelSAT-Lab8-Firmware
+          path: package/
+          if-no-files-found: error
+          retention-days: 30
