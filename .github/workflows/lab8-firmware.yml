@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          sparse-checkout: Astro-331-2026-Fall/Astro331_Lab8_Code
       - name: Package only the PlatformIO project
         shell: pwsh
         run: |
