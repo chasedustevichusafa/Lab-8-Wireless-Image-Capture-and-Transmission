@@ -25,6 +25,9 @@ Sign into GitHub to download artifacts. Extract the ZIP and open its
 `KestrelSAT-Lab8` folder in PlatformIO; `platformio.ini` is directly inside it.
 This small artifact contains only this project. Its source files are verified by
 compressing/extracting them and comparing their checksums on a Windows runner.
+The workflow runs automatically when this project or its packaging workflow
+changes on `main` or `feature/remote-files`, including merges into `main`.
+Manual runs remain available through **Run workflow**.
 
 ## Wiring and build
 
