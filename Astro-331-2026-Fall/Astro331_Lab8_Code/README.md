@@ -4,6 +4,19 @@ Upload this project to use the GCS **Remote Files** tab. Labs 4 and 5 are left
 unchanged. This first milestone downloads existing files; it does not yet command
 camera capture or provide live preview.
 
+## Dated changes
+
+- **2026-10-20 — Hardware integration confirmed:** The project owner confirmed
+  that this firmware and the Windows KestrelSAT GCS work together on the
+  KestrelSAT/XBee hardware for the remote file-transfer milestone, using the
+  working lab board configuration and 9600-baud radio link.
+- **2026-10-15 — Remote SD file service implemented:** Added read-only directory
+  browsing and binary downloads, sequential 128-byte chunks, request retries
+  with response replay, per-frame and whole-file CRC32 checks, cancellation
+  cleanup, and idle-session expiry. Added C++/Python protocol tests and a small
+  firmware download artifact verified by ZIP extraction on Windows. The
+  packaging workflow checks out only Lab 8 to avoid legacy Windows path limits.
+
 ## Download this project on Windows
 
 In this repository's **Actions** tab, open **Download Lab 8 firmware**, then open
