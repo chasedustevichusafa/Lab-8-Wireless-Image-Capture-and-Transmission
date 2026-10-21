@@ -6,11 +6,18 @@ camera capture or provide live preview.
 
 ## Dated changes
 
+- **2026-10-21 — File management:** Added MANAGE1 capability, file-only DELETE
+  and same-folder RENAME, no-overwrite checks and retained results for lost replies.
+  Startup marker is `KFS1 manage-1`. All 24 host protocol tests and both baud-rate
+  builds passed; delete/rename hardware testing remains pending.
+- **2026-10-21 — Upload hardware result:** The project owner confirmed that the
+  matching GCS and upload firmware work together on hardware.
+
 - **2026-10-21 — Verified uploads:** Added capability negotiation, exclusive
   temporary files, bounded write retries with SD sync, batched read-back CRC
   verification, no-replace publication and status recovery for lost completion
   replies. Cancel/expiry clean temporary files; reserved leftovers can be removed
-  from the GCS. Startup marker is `KFS1 upload-1`. Upload hardware testing is pending.
+  from the GCS. Startup marker is `KFS1 upload-1`. The project owner subsequently confirmed uploads work.
 - **2026-10-21 — Stability result:** The project owner confirmed the preceding
   read-recovery build worked on hardware. The physical cause and a measured
   twenty-transfer acceptance result remain unconfirmed.
@@ -43,14 +50,14 @@ camera capture or provide live preview.
 ## Download this project on Windows
 
 In this repository's **Actions** tab, open **Download Lab 8 firmware**, then open
-its latest successful run. Download **KestrelSAT-Lab8-Firmware** under Artifacts.
+its latest successful run on `feature/remote-file-management`. Download **KestrelSAT-Lab8-Firmware** under Artifacts.
 Sign into GitHub to download artifacts. Extract the ZIP and open its
 `KestrelSAT-Lab8` folder in PlatformIO; `platformio.ini` is directly inside it.
 This small artifact contains only this project. Its source files are verified by
 compressing/extracting them and comparing their checksums on a Windows runner.
 The workflow runs automatically when this project or its packaging workflow
 changes on `main`, `feature/remote-files`, `feature/high-baud-link`, or
-`fix/file-transfer-stability`, or `feature/remote-upload`, including
+`fix/file-transfer-stability`, `feature/remote-upload`, or `feature/remote-file-management`, including
 merges into `main`.
 Manual runs remain available through **Run workflow**.
 
@@ -131,7 +138,7 @@ legacy 802.15.4 API indicators (AO=2); keep that setting and use the updated
 ## Stability diagnostics — 2026-10-21
 
 Use the `fix/file-transfer-stability` source artifact and the matching GCS
-stability build. At startup the satellite USB monitor prints `KFS1 upload-1` in the current upload build,
+stability build. At startup the satellite USB monitor prints `KFS1 manage-1` in the current management build,
 reset reason, SD SPI clock and the XBee UART baud. SD reads retry at the exact
 same byte offset up to three times, with a 10 ms pause before retries; partial
 attempts do not advance the protocol offset or checksum. Permanent failures
@@ -162,13 +169,13 @@ mode including the largest failing file. Simulated tests do not meet that goal.
 
 ## Upload a file — 2026-10-21
 
-Use the matching GCS executable and source artifact on `feature/remote-upload`.
+Use the matching GCS executable and source artifact on `feature/remote-file-management`.
 Select `esp32thing_plus_115200` when uploading firmware for the existing 115200
 radios. Keep the working wiring, SD clock and radio configuration. Confirm the
-satellite USB startup marker `KFS1 upload-1`.
+satellite USB startup marker `KFS1 manage-1` in the current build.
 
 In GCS **Remote Files**, browse to an existing destination folder and Refresh.
-The new firmware advertises `CAPS|UPLOAD1|128`, enabling **Upload...** and
+The new firmware advertises `CAPS|UPLOAD1|MANAGE1|128` in the current build, enabling **Upload...** and
 **Remove partial...**. Select a local file and choose its destination filename.
 Existing names are rejected, including case-insensitive aliases. The final name
 appears only after complete size/CRC verification of data read back from the SD.
@@ -204,6 +211,33 @@ hardware checklist](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/f
 For acceptance, upload/download-compare empty, small, 14 KB JPEG and larger binary
 files, then test Cancel/disconnect and repeated runs with API RSSI polling on/off.
 Automated simulation and compilation do not establish physical upload reliability.
+
+## Delete and rename files — 2026-10-21
+
+Use matching `feature/remote-file-management` firmware and GCS builds. Upload
+`esp32thing_plus_115200` for the current 115200 radios and keep their working
+AP settings. Confirm startup marker `KFS1 manage-1`. In GCS Remote Files,
+**Refresh / Open**, select a file, and choose **Rename...** or **Delete...**.
+Deletion asks for confirmation and permanently removes the selected file. Rename
+keeps the current folder and rejects existing destinations and case-only changes.
+Folders and reserved `.kfs-` upload names are excluded; use Remove partial for
+unfinished uploads. Old firmware leaves the new management buttons disabled.
+
+The service advertises `CAPS|UPLOAD1|MANAGE1|128`. New commands are DELETE with a
+hex path, RENAME with hex source/target paths, and RESULT with the original
+request ID. Replies are DELETED, RENAMED or ERR; RESULT returns the retained
+operation/outcome or UNKNOWN. The last management request/reply survives metadata
+queries and idle expiry in RAM, allowing duplicate replay and lost-reply recovery.
+Reset or a newer management operation loses/replaces this record. On unknown
+completion, Refresh and inspect before trying again. These SD operations are not
+power-loss transactions. Active file sessions block management; dispatched
+operations cannot be cancelled. Frames allow 1024 bytes for two 192-byte paths.
+
+All 24 host protocol tests passed, including loss/retry, idle expiry, long paths,
+backend errors, directory rejection and overwrite protection. Both firmware
+baud-rate builds passed. Test on disposable files first: rename, download/compare,
+delete and Refresh. Management hardware validation remains pending. Full setup:
+[GCS file management](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/feature/remote-file-management/docs/remote-file-management.md).
 
 ## Hardware test
 
@@ -247,8 +281,8 @@ leading newline before each request to recover a truncated preceding command.
 Errors are `ERR|CODE`. The token is the OPEN request ID. READ must advance
 sequentially; only the last identical request is replayed on retries. END verifies
 that all bytes were read, returns the whole-file checksum, and closes the file.
-There is no write/delete command. Maximum path: 192 bytes; maximum frame buffer:
-768 bytes; maximum file: 4 GiB minus one byte. Do not change card contents during
+Upload and management commands extend this base protocol (see above).
+Maximum path: 192 bytes; maximum frame buffer: 1024 bytes; maximum file: 4 GiB minus one byte. Do not change card contents during
 an operation. Each LIST reopens/scans the directory to avoid persistent directory
 handles across canceled listings. The GCS caps listings at 4096 entries.
 

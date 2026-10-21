@@ -110,6 +110,22 @@ public:
         if (temporary_.empty() || !std::filesystem::exists(temporary_)) return true;
         return std::filesystem::remove(temporary_);
     }
+    const char* deleteFile(const char* path) {
+        auto full = root_/(path+1);
+        if (!std::filesystem::exists(full)) return "FILE_UNAVAILABLE";
+        if (!std::filesystem::is_regular_file(full)) return "NOT_A_FILE";
+        if (fault_ == "delete-fail") return "DELETE_FAILED";
+        return std::filesystem::remove(full) ? nullptr : "DELETE_FAILED";
+    }
+    const char* renameFile(const char* path, const char* target) {
+        auto full = root_/(path+1), destination = root_/(target+1);
+        if (!std::filesystem::exists(full)) return "FILE_UNAVAILABLE";
+        if (!std::filesystem::is_regular_file(full)) return "NOT_A_FILE";
+        if (fatExists(destination)) return "TARGET_EXISTS";
+        if (fault_ == "rename-fail") return "RENAME_FAILED";
+        if (::link(full.c_str(), destination.c_str()) != 0) return "RENAME_FAILED";
+        return std::filesystem::remove(full) ? nullptr : "RENAME_FAILED";
+    }
     bool cleanPartial(const char* path) {
         auto full = root_/(path+1);
         return kfs::partialPath(path) && std::filesystem::is_regular_file(full) && std::filesystem::remove(full);
@@ -135,6 +151,13 @@ int main(int argc, char** argv) {
         const char* response = service.handle(line.c_str());
         if (!response) continue;
         std::string frame(response);
+        if ((fault == "manage-drop-reply" || fault == "manage-drop-all" || fault == "manage-expire-reply") &&
+            (frame.find("|DELETED|") != std::string::npos || frame.find("|RENAMED|") != std::string::npos ||
+             frame.find("|DELETED\n") != std::string::npos || frame.find("|RENAMED\n") != std::string::npos)) {
+            bool result = line.find("|RESULT|") != std::string::npos;
+            if (!result && fault == "manage-expire-reply") service.expire();
+            if (fault == "manage-drop-all" || !result) continue;
+        }
         if (fault == "upload-drop-ready" && frame.find("|READY|") != std::string::npos) continue;
         if (((fault == "upload-drop-commit" && line.find("|COMMIT|") != std::string::npos) ||
              fault == "upload-drop-terminal") && frame.find("|STORED|") != std::string::npos) continue;

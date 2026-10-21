@@ -8,7 +8,7 @@
 #include <string.h>
 
 namespace kfs {
-static const size_t MAX_LINE = 768;
+static const size_t MAX_LINE = 1024;
 static const size_t MAX_PATH = 192;
 static const size_t CHUNK = 128;
 static const uint8_t READ_ATTEMPTS = 3;
@@ -79,18 +79,23 @@ inline bool partialPath(const char* path) {
     for (unsigned i = 5; i < 13; ++i) if (nibble(name[i]) < 0) return false;
     return true;
 }
-inline bool uploadPath(const char* path) {
+inline bool uploadPath(const char* path, bool temporary = true) {
     const char* name = strrchr(path, '/');
     if (!name || !name[1]) return false;
     ++name;
     if ((strlen(name) >= 5 && name[0] == '.' && (name[1] | 32) == 'k' &&
              (name[2] | 32) == 'f' && (name[3] | 32) == 's' && name[4] == '-') ||
-            strlen(path)-strlen(name)+18 > MAX_PATH) return false;
+            (temporary && strlen(path)-strlen(name)+18 > MAX_PATH)) return false;
     for (const char* c = path; *c; ++c) {
         if (strchr("<>:\"|?*", *c)) return false;
         if ((*c == '.' || *c == ' ') && (!c[1] || c[1] == '/')) return false;
     }
     return true;
+}
+inline bool sameFolder(const char* first, const char* second) {
+    const char* a = strrchr(first, '/');
+    const char* b = strrchr(second, '/');
+    return a && b && a-first == b-second && !memcmp(first, second, (size_t)(a-first));
 }
 struct Entry {
     char name[MAX_PATH + 1];
@@ -123,6 +128,7 @@ public:
         if (!last || strlen(last + 1) != 8 || !number(last + 1, supplied, 16) ||
             (crcUpdate(0xFFFFFFFFUL, (const uint8_t*)line, last-line) ^ 0xFFFFFFFFUL) != supplied)
             return nullptr;
+        if (mutationRequest_[0] && !strcmp(line, mutationRequest_)) return mutationResponse_;
         if (cachedRequest_[0] && !strcmp(line, cachedRequest_)) return response_;
         char work[MAX_LINE];
         memcpy(work, line, last-line);
@@ -144,7 +150,32 @@ public:
         const char* op = fields[2];
         char path[MAX_PATH + 1];
         if (!strcmp(op, "HELLO") && count == 3) return reply("HELLO|1|128");
-        if (!strcmp(op, "CAPS") && count == 3) return reply("CAPS|UPLOAD1|128");
+        if (!strcmp(op, "CAPS") && count == 3) return reply("CAPS|UPLOAD1|MANAGE1|128");
+        if (!strcmp(op, "RESULT") && count == 4) {
+            uint32_t request;
+            if (!number(fields[3], request, 16) || !mutationRequest_[0] || request != mutationId_)
+                return reply("RESULT|UNKNOWN");
+            char body[100];
+            snprintf(body, sizeof(body), "RESULT|%s|%s", mutationOp_, mutationBody_);
+            return reply(body);
+        }
+        if ((!strcmp(op, "DELETE") && count == 4) || (!strcmp(op, "RENAME") && count == 5)) {
+            const char* error = nullptr;
+            char target[MAX_PATH+1];
+            if (active_) error = "BUSY";
+            else if (!decodePath(fields[3], path) || !uploadPath(path, false)) error = "BAD_PATH";
+            else if (!strcmp(op, "RENAME") &&
+                     (!decodePath(fields[4], target) || !uploadPath(target, false) || !sameFolder(path, target)))
+                error = "BAD_PATH";
+            else error = !strcmp(op, "DELETE") ? backend_.deleteFile(path) : backend_.renameFile(path, target);
+            char body[64];
+            if (error) snprintf(body, sizeof(body), "ERR|%s", error);
+            else strcpy(body, !strcmp(op, "DELETE") ? "DELETED" : "RENAMED");
+            const char* response = reply(body);
+            strcpy(mutationRequest_, cachedRequest_); strcpy(mutationResponse_, response);
+            strcpy(mutationBody_, body); strcpy(mutationOp_, op); mutationId_ = id;
+            return response;
+        }
         if (!strcmp(op, "CLEAN") && count == 4) {
             if (active_) return reply("ERR|BUSY");
             if (!decodePath(fields[3], path) || !partialPath(path)) return reply("ERR|BAD_PATH");
@@ -342,6 +373,9 @@ private:
         snprintf(response_ + n, sizeof(response_)-n, "|%08lx\n", (unsigned long)crc);
         return response_;
     }
+    char mutationRequest_[MAX_LINE] = {}, mutationResponse_[128] = {};
+    char mutationBody_[64] = {}, mutationOp_[8] = {};
+    uint32_t mutationId_ = 0;
     Backend& backend_;
     bool active_ = false, uploading_ = false, verifying_ = false, completed_ = false;
     uint32_t expectedCrc_ = 0, verifyNext_ = 0, verifyCrc_ = 0xffffffffUL, lastVerify_ = UINT32_MAX;
