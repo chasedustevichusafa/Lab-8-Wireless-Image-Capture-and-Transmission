@@ -1,4 +1,4 @@
-// Lab 8: read-only SD browser and reliable file downloads over the Lab 4 XBee.
+// Lab 8: SD browser and verified file uploads/downloads over the Lab 4 XBee.
 // Camera preview is a later milestone; keep the camera deselected on shared SPI.
 #include <Arduino.h>
 #include <SPI.h>
@@ -76,10 +76,83 @@ public:
         }
         return got;
     }
+    const char* beginUpload(const char* target, const char* temporary, uint32_t size) {
+        if (!sdReady) return "SD_UNAVAILABLE";
+        if (sd.exists(target)) return "TARGET_EXISTS";
+        char parent[kfs::MAX_PATH+1]; strcpy(parent, target);
+        char* slash = strrchr(parent, '/');
+        if (slash == parent) slash[1] = 0; else *slash = 0;
+        FsFile dir = sd.open(parent, O_RDONLY);
+        bool valid = dir && dir.isDirectory(); dir.close();
+        if (!valid) return "DIRECTORY_UNAVAILABLE";
+        int32_t clusters = sd.vol()->freeClusterCount();
+        if (clusters < 0) return "SD_UNAVAILABLE";
+        if ((uint64_t)clusters * sd.vol()->bytesPerCluster() < size) return "OUT_OF_SPACE";
+        if (sd.exists(temporary)) return "TEMP_EXISTS";
+        file_ = sd.open(temporary, O_RDWR | O_CREAT | O_EXCL);
+        if (!file_) return "CREATE_FAILED";
+        strcpy(target_, target); strcpy(temporary_, temporary);
+        Serial.printf("[UPLOAD] temporary=%s target=%s bytes=%lu\n", temporary_, target_, (unsigned long)size);
+        return nullptr;
+    }
+    int writeAt(uint32_t offset, const uint8_t* bytes, size_t n, uint8_t attempt) {
+        uint32_t started = micros();
+        bool positioned = true;
+        if (attempt > 1) {
+            delay(10);
+            // Reopen only this session's exclusive temporary file to rebuild
+            // FAT state after a failed allocation/write, including at offset 0.
+            if (file_) {
+                bool synced = file_.sync();
+                bool closed = file_.close();
+                positioned = synced && closed;
+            }
+            if (positioned) file_ = sd.open(temporary_, O_RDWR);
+            positioned = positioned && file_;
+        }
+        positioned = positioned && file_.seekSet(offset);
+        int got = positioned ? (int)file_.write(bytes, n) : -1;
+        if (got == (int)n && !file_.sync()) got = -1;
+        if (got != (int)n || attempt > 1 || millis()-lastReport_ >= 1000) {
+            Serial.printf("[SD_WRITE] ms=%lu offset=%lu wanted=%u got=%d attempt=%u us=%lu card=0x%02x data=0x%02x file_latched=0x%02x\n",
+                          (unsigned long)millis(), (unsigned long)offset, (unsigned)n, got,
+                          (unsigned)attempt, (unsigned long)(micros()-started),
+                          sd.sdErrorCode(), sd.sdErrorData(), file_.getError());
+            lastReport_ = millis();
+        }
+        return got;
+    }
+    bool prepareVerify(uint32_t size) {
+        if (!file_.sync() || file_.size() != size) return false;
+        if (!file_.close()) return false;
+        file_ = sd.open(temporary_, O_RDONLY);
+        return file_ && file_.size() == size;
+    }
+    bool commitUpload() {
+        if (!file_.close() || sd.exists(target_)) return false;
+        if (!sd.rename(temporary_, target_)) return false;
+        Serial.printf("[UPLOAD] stored=%s\n", target_);
+        temporary_[0] = target_[0] = 0;
+        return true;
+    }
+    bool abortUpload() {
+        file_.close();
+        bool removed = !temporary_[0] || !sd.exists(temporary_) || sd.remove(temporary_);
+        Serial.printf("[UPLOAD] abort temporary=%s removed=%u\n", temporary_, removed);
+        temporary_[0] = target_[0] = 0;
+        return removed;
+    }
+    bool cleanPartial(const char* path) {
+        if (!kfs::partialPath(path)) return false;
+        FsFile file = sd.open(path, O_RDONLY);
+        bool valid = file && !file.isDirectory(); file.close();
+        return valid && sd.remove(path);
+    }
     void close() { file_.close(); }
 private:
     FsFile file_;
     uint32_t lastReport_ = 0;
+    char target_[kfs::MAX_PATH+1] = {}, temporary_[kfs::MAX_PATH+1] = {};
 };
 SdBackend backend;
 kfs::Service<SdBackend> service(backend);
@@ -93,7 +166,7 @@ void setup() {
     Serial.begin(115200); // Never wait for USB: the satellite must boot untethered.
     Xbee.setRxBufferSize(1024);
     Xbee.begin(XBEE_UART_BAUD, SERIAL_8N1, XBEE_RX, XBEE_TX);
-    Serial.printf("[INFO] KFS1 stability-1 reset_reason=%d SD_SPI_MHZ=%u\n",
+    Serial.printf("[INFO] KFS1 upload-1 reset_reason=%d SD_SPI_MHZ=%u\n",
                   (int)esp_reset_reason(), (unsigned)SD_SPI_MHZ);
     Serial.printf("[INFO] XBee UART: %lu baud\n", (unsigned long)XBEE_UART_BAUD);
     pinMode(CAMERA_CS, OUTPUT); digitalWrite(CAMERA_CS, HIGH);
