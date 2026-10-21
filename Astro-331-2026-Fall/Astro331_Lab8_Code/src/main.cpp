@@ -5,6 +5,12 @@
 #include <SdFat.h>
 #include "file_service.h"
 
+#ifndef XBEE_UART_BAUD
+#define XBEE_UART_BAUD 9600
+#endif
+static_assert(XBEE_UART_BAUD == 9600 || XBEE_UART_BAUD == 115200,
+              "Select a documented XBee UART baud rate");
+
 static const uint8_t SD_CS = 5, CAMERA_CS = 12;
 static const int SPI_SCK_PIN = 18, SPI_MISO_PIN = 19, SPI_MOSI_PIN = 23;
 static const int XBEE_RX = 16, XBEE_TX = 17;
@@ -61,7 +67,8 @@ bool protocolQuiet = false;
 void setup() {
     Serial.begin(115200); // Never wait for USB: the satellite must boot untethered.
     Xbee.setRxBufferSize(1024);
-    Xbee.begin(9600, SERIAL_8N1, XBEE_RX, XBEE_TX);
+    Xbee.begin(XBEE_UART_BAUD, SERIAL_8N1, XBEE_RX, XBEE_TX);
+    Serial.printf("[INFO] XBee UART: %lu baud\n", (unsigned long)XBEE_UART_BAUD);
     pinMode(CAMERA_CS, OUTPUT); digitalWrite(CAMERA_CS, HIGH);
     pinMode(SD_CS, OUTPUT); digitalWrite(SD_CS, HIGH);
     pinMode(LED_BUILTIN, OUTPUT);
