@@ -36,8 +36,21 @@ capture and live image preview are future work. See the
 [Lab 8 README](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md) for wiring, protocol,
 limits, build commands, and tests.
 
+## Optional faster UART link — 2026-10-21
+
+For the 115200-baud test, select the `esp32thing_plus_115200` firmware environment,
+configure both radios' UART baud settings in XCTU, and select 115200 in the GCS.
+The normal firmware environment remains at 9600. See the
+[setup and rollback instructions](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#optional-115200-baud-test).
+This changes UART speed, not the radio's RF bitrate; verify transfer contents
+and compare measured rates on the hardware.
+
 ## Dated changes
 
+- **2026-10-21 — 115200 transparent link confirmed:** The project owner reported
+  successful connection and Remote Files operation with the faster firmware and
+  both radios in transparent mode. The ground radio's legacy API receive format
+  required a GCS compatibility fix; physical API/RSSI testing remains pending.
 - **2026-10-20 — Hardware integration confirmed:** The project owner reported
   successful operation of the Windows GCS and Lab 8 firmware together. Added
   this repository overview and recorded the integration status in the project

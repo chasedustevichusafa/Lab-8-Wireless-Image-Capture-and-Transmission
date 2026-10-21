@@ -6,6 +6,16 @@ camera capture or provide live preview.
 
 ## Dated changes
 
+- **2026-10-21 — 115200 transparent link confirmed:** The project owner reported
+  successful connection and Remote Files operation using this baud-rate variant
+  with both radios in AP=0. The ground radio's legacy API output exposed a GCS
+  receive-format compatibility issue; use the updated GCS feature build when
+  testing ground AP=1. Physical API/RSSI validation remains pending.
+- **2026-10-21 — Optional 115200-baud test build:** Added the
+  `esp32thing_plus_115200` environment. The original `esp32thing_plus` environment
+  and default build remain at 9600 baud. Radio settings must be changed in XCTU
+  before using the faster UART configuration; see the procedure below.
+
 - **2026-10-20 — Hardware integration confirmed:** The project owner confirmed
   that this firmware and the Windows KestrelSAT GCS work together on the
   KestrelSAT/XBee hardware for the remote file-transfer milestone, using the
@@ -26,7 +36,8 @@ Sign into GitHub to download artifacts. Extract the ZIP and open its
 This small artifact contains only this project. Its source files are verified by
 compressing/extracting them and comparing their checksums on a Windows runner.
 The workflow runs automatically when this project or its packaging workflow
-changes on `main` or `feature/remote-files`, including merges into `main`.
+changes on `main`, `feature/remote-files`, or `feature/high-baud-link`, including
+merges into `main`.
 Manual runs remain available through **Run workflow**.
 
 ## Wiring and build
@@ -58,6 +69,50 @@ initialization fails, the radio still starts; the GCS reports unavailable paths.
 Check/reinsert the card and reset to retry initialization. Commands `1` (help)
 and `3` (LED toggle) remain available in the serial monitor. Lab 4's blocking RSSI
 command is not included in this file-service firmware.
+
+## Optional 115200-baud test
+
+The existing GCS already offers **115200** in its Baud Rate selector, including
+in the transfer-statistics feature build. No new GCS executable is required for
+this baud-rate option. Both transparent and AP=1 connections can use it.
+
+1. Close the GCS and stop any transfer. In XCTU, save a backup of **each radio's**
+   working configuration before changing it. Access the satellite radio through
+   its appropriate USB adapter/programming connection; the GCS does not change
+   radio settings remotely.
+2. On the **ground XBee**, set **BD — UART Baud Rate** to **115200**, write it,
+   then reconnect XCTU at 115200 if prompted. Retain its chosen AP mode: AP=1
+   for the new GCS API/RSSI feature or AP=0 for transparent mode.
+3. On the **satellite XBee**, set **BD** to **115200** and write it. Keep **AP=0**
+   (transparent mode). Preserve destination addresses, network/security settings,
+   and all other working radio parameters on both radios.
+4. In PlatformIO, select **Project Tasks → esp32thing_plus_115200 → Upload**,
+   or run the commands below. This uses the same board and pins as the working
+   lab firmware. The USB debug monitor remains at 115200 and prints the selected
+   XBee UART rate at startup; USB monitor speed alone does not change radio baud.
+5. Close XCTU, open the GCS, select **115200 baud, 8N1** and the correct ground
+   radio mode, then Connect. Start with a small file and compare it with its SD
+   original, then test a larger file and compare rate/CSV plots with a 9600 run.
+
+```sh
+pio run -e esp32thing_plus_115200
+pio run -e esp32thing_plus_115200 -t upload
+```
+
+The matching pairs are **GCS ↔ ground XBee UART** and **ESP32 firmware ↔ satellite
+XBee UART**. UART rates need not match across the RF link, but using 115200 on
+both ends removes the old 9600-baud serial bottlenecks. It does not change the RF
+bitrate or guarantee twelve times the file-transfer throughput: packet overhead,
+encoding, radio latency, retries and RSSI polling still contribute.
+
+To roll back, restore both XBees' BD settings to 9600 in XCTU, upload
+`esp32thing_plus`, and select 9600 in the GCS. Keep each end's AP mode matched to
+its software. Both build variants are compiled during development; over-the-air
+115200 connection and Remote Files operation in transparent mode were confirmed
+by the project owner on 2026-10-21. API/RSSI operation with the corrected GCS
+receive handling still requires a hardware test. The supplied ground radio uses
+legacy 802.15.4 API indicators (AO=2); keep that setting and use the updated
+[GCS feature build](https://github.com/chasedustevichusafa/KestrelSAT-GCS/tree/feature/transfer-statistics).
 
 ## Hardware test
 
