@@ -3,7 +3,7 @@ name: Download Lab 8 firmware
 on:
   workflow_dispatch:
   push:
-    branches: ['main', 'feature/remote-files', 'feature/high-baud-link']
+    branches: ['main', 'feature/remote-files', 'feature/high-baud-link', 'fix/file-transfer-stability']
     paths:
       - 'Astro-331-2026-Fall/Astro331_Lab8_Code/**'
       - '.github/workflows/lab8-firmware.yml'

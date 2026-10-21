@@ -47,6 +47,11 @@ and compare measured rates on the hardware.
 
 ## Dated changes
 
+- **2026-10-21 — Transfer stability diagnostic build:** On
+  `fix/file-transfer-stability`, added bounded SD read retries at the same byte
+  offset, detailed USB error output and `SDCHECK` local read/CRC passes. Automated
+  fault injection reproduces the old failure and verifies recovery; the physical
+  failure source and hardware reliability target remain under investigation.
 - **2026-10-21 — 115200 transparent link confirmed:** The project owner reported
   successful connection and Remote Files operation with the faster firmware and
   both radios in transparent mode. The ground radio's legacy API receive format

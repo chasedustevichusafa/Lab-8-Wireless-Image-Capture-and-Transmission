@@ -11,6 +11,7 @@ namespace kfs {
 static const size_t MAX_LINE = 768;
 static const size_t MAX_PATH = 192;
 static const size_t CHUNK = 128;
+static const uint8_t READ_ATTEMPTS = 3;
 
 inline uint32_t crcUpdate(uint32_t crc, const uint8_t* bytes, size_t length) {
     while (length--) {
@@ -78,11 +79,12 @@ struct Entry {
 };
 
 // Backend: list(path,index,entry) -> 1 entry, 0 end, -1 error;
-// open(path,size), read(buffer,count), close(). The open file remains owned by
+// open(path,size), readAt(offset,buffer,count,attempt), close(). The open file remains owned by
 // one session, and READ is sequential. END returns the whole-file CRC32.
 template<class Backend> class Service {
 public:
     explicit Service(Backend& backend) : backend_(backend) {}
+    bool active() const { return active_; }
     void expire() { backend_.close(); active_ = false; cachedRequest_[0] = 0; }
 
     // Ignore non-protocol text or damaged requests. No unchecked command is run.
@@ -162,9 +164,16 @@ public:
                 return reply("ERR|BAD_OFFSET");
             uint8_t bytes[CHUNK];
             size_t n = (size_ - next_ < CHUNK) ? size_ - next_ : CHUNK;
-            int got = backend_.read(bytes, n);
+            int got = -1;
+            for (uint8_t attempt = 1; attempt <= READ_ATTEMPTS; ++attempt) {
+                got = backend_.readAt(next_, bytes, n, attempt);
+                if (got == (int)n) break;
+            }
             if (got != (int)n) {
-                backend_.close(); active_ = false; return reply("ERR|READ_FAILED");
+                char body[100];
+                snprintf(body, sizeof(body), "ERR|READ_FAILED|%lu|%u|%d|%u",
+                         (unsigned long)next_, (unsigned)n, got, (unsigned)READ_ATTEMPTS);
+                backend_.close(); active_ = false; return reply(body);
             }
             char hex[CHUNK*2+1], body[CHUNK*2+40];
             hexEncode(bytes, n, hex);

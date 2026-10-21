@@ -85,6 +85,40 @@ class FirmwareProtocolTests(unittest.TestCase):
                 client.download('/binary.bin', destination)
                 self.assertEqual(destination.read_bytes(), self.payload)
 
+    def test_transient_sd_reads_recover_without_skipping_bytes(self):
+        for fault in ('read-short', 'read-zero', 'read-error', 'read-scattered'):
+            with self.subTest(fault=fault):
+                client = self.client(fault)
+                destination = self.root / fault
+                client.download('/binary.bin', destination)
+                self.assertEqual(destination.read_bytes(), self.payload)
+
+    def test_twenty_transfers_with_scattered_transient_read_failures(self):
+        client = self.client('read-scattered')
+        destination = self.root / 'stress.bin'
+        for _ in range(20):
+            client.download('/binary.bin', destination)
+            self.assertEqual(destination.read_bytes(), self.payload)
+
+    def test_expired_session_fails_cleanly_without_saving_partial_file(self):
+        client = self.client('expire')
+        destination = self.root / 'expired.bin'
+        with self.assertRaisesRegex(RemoteError, 'NO_SESSION'):
+            client.download('/binary.bin', destination)
+        self.assertFalse(destination.exists())
+        self.assertFalse(list(self.root.glob('*.part')))
+        self.assertEqual(len(client.list_directory('/')), 3)
+
+    def test_permanent_sd_failure_is_bounded_and_preserves_existing_file(self):
+        client = self.client('read-permanent')
+        destination = self.root / 'result'
+        destination.write_bytes(b'original')
+        with self.assertRaisesRegex(RemoteError, 'READ_FAILED.*4096.*128.*-1.*3'):
+            client.download('/binary.bin', destination)
+        self.assertEqual(destination.read_bytes(), b'original')
+        self.assertFalse(list(self.root.glob('*.part')))
+        self.assertEqual(len(client.list_directory('/')), 3)
+
     def test_checksum_failure_preserves_existing_file(self):
         client = self.client('bad-final-crc')
         destination = self.root / 'result'

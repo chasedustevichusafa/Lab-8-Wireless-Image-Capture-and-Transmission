@@ -6,6 +6,11 @@ camera capture or provide live preview.
 
 ## Dated changes
 
+- **2026-10-21 — Transfer stability diagnostic build:** Added up to three reads
+  of the same chunk before reporting a permanent failure, with position/FAT-state
+  restoration before retry. New USB diagnostics report SD errors, failed offsets,
+  timing and resets. `SDCHECK /absolute/path` scans a file locally three times
+  without radio traffic. Hardware root-cause/reliability testing remains pending.
 - **2026-10-21 — 115200 transparent link confirmed:** The project owner reported
   successful connection and Remote Files operation using this baud-rate variant
   with both radios in AP=0. The ground radio's legacy API output exposed a GCS
@@ -36,7 +41,8 @@ Sign into GitHub to download artifacts. Extract the ZIP and open its
 This small artifact contains only this project. Its source files are verified by
 compressing/extracting them and comparing their checksums on a Windows runner.
 The workflow runs automatically when this project or its packaging workflow
-changes on `main`, `feature/remote-files`, or `feature/high-baud-link`, including
+changes on `main`, `feature/remote-files`, `feature/high-baud-link`, or
+`fix/file-transfer-stability`, including
 merges into `main`.
 Manual runs remain available through **Run workflow**.
 
@@ -113,6 +119,38 @@ by the project owner on 2026-10-21. API/RSSI operation with the corrected GCS
 receive handling still requires a hardware test. The supplied ground radio uses
 legacy 802.15.4 API indicators (AO=2); keep that setting and use the updated
 [GCS feature build](https://github.com/chasedustevichusafa/KestrelSAT-GCS/tree/feature/transfer-statistics).
+
+## Stability diagnostics — 2026-10-21
+
+Use the `fix/file-transfer-stability` source artifact and the matching GCS
+stability build. At startup the satellite USB monitor prints `KFS1 stability-1`,
+reset reason, SD SPI clock and the XBee UART baud. SD reads retry at the exact
+same byte offset up to three times, with a 10 ms pause before retries; partial
+attempts do not advance the protocol offset or checksum. Permanent failures
+close the session and report `READ_FAILED|offset|wanted|got|attempts` to the GCS.
+SD failures/recoveries and periodic read checkpoints go to USB only. Raw
+`file_latched` error flags may persist after a successful retry.
+
+For a local SD baseline, disconnect the GCS and open the satellite USB monitor
+at 115200. Enable newline endings and send `SDCHECK /path/to/file.jpg`. With no
+active transfer, it makes three local read-only passes without recovery retries
+or transmitting file data. Each completed pass prints bytes, CRC32 and elapsed
+milliseconds; a failure prints the offset, requested/returned counts and SD
+errors. All passes should complete with matching CRCs. Wait for an old session
+to expire or reset if it reports busy. The scan occupies the firmware loop, so
+keep the GCS disconnected while running it.
+
+The default SD SPI clock remains 25 MHz. For an evidence-driven lower-clock
+comparison, add `-D SD_SPI_MHZ=10` to the selected environment's build_flags,
+retaining `-D XBEE_UART_BAUD=115200` for the faster UART environment. Rebuild,
+upload and verify the printed clock. Preserve the working board/wiring and
+change one variable at a time; the lower clock is not an established fix.
+
+Follow the [GCS stability test procedure](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/fix/file-transfer-stability/docs/file-transfer-stability.md)
+for comparisons of local SD, transparent radio, API without polling and API with
+RSSI polling. The GCS saves bounded metadata captures under `transfer_diagnostics/`.
+The hardware goal is at least 20 consecutive verified downloads per supported
+mode including the largest failing file. Simulated tests do not meet that goal.
 
 ## Hardware test
 
