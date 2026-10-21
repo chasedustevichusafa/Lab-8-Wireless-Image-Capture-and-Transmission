@@ -47,6 +47,10 @@ and compare measured rates on the hardware.
 
 ## Dated changes
 
+- **2026-10-21 — 115200 transparent link confirmed:** The project owner reported
+  successful connection and Remote Files operation with the faster firmware and
+  both radios in transparent mode. The ground radio's legacy API receive format
+  required a GCS compatibility fix; physical API/RSSI testing remains pending.
 - **2026-10-20 — Hardware integration confirmed:** The project owner reported
   successful operation of the Windows GCS and Lab 8 firmware together. Added
   this repository overview and recorded the integration status in the project

@@ -6,6 +6,11 @@ camera capture or provide live preview.
 
 ## Dated changes
 
+- **2026-10-21 — 115200 transparent link confirmed:** The project owner reported
+  successful connection and Remote Files operation using this baud-rate variant
+  with both radios in AP=0. The ground radio's legacy API output exposed a GCS
+  receive-format compatibility issue; use the updated GCS feature build when
+  testing ground AP=1. Physical API/RSSI validation remains pending.
 - **2026-10-21 — Optional 115200-baud test build:** Added the
   `esp32thing_plus_115200` environment. The original `esp32thing_plus` environment
   and default build remain at 9600 baud. Radio settings must be changed in XCTU
@@ -103,7 +108,11 @@ encoding, radio latency, retries and RSSI polling still contribute.
 To roll back, restore both XBees' BD settings to 9600 in XCTU, upload
 `esp32thing_plus`, and select 9600 in the GCS. Keep each end's AP mode matched to
 its software. Both build variants are compiled during development; over-the-air
-115200 operation still requires a hardware test.
+115200 connection and Remote Files operation in transparent mode were confirmed
+by the project owner on 2026-10-21. API/RSSI operation with the corrected GCS
+receive handling still requires a hardware test. The supplied ground radio uses
+legacy 802.15.4 API indicators (AO=2); keep that setting and use the updated
+[GCS feature build](https://github.com/chasedustevichusafa/KestrelSAT-GCS/tree/feature/transfer-statistics).
 
 ## Hardware test
 
