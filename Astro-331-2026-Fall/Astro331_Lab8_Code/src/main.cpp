@@ -142,6 +142,31 @@ public:
         temporary_[0] = target_[0] = 0;
         return removed;
     }
+    const char* deleteFile(const char* path) {
+        if (!sdReady) return "SD_UNAVAILABLE";
+        FsFile file = sd.open(path, O_RDONLY);
+        if (!file) return "FILE_UNAVAILABLE";
+        bool directory = file.isDirectory();
+        bool closed = file.close();
+        if (directory) return "NOT_A_FILE";
+        if (!closed) return "SD_ERROR";
+        if (!sd.remove(path)) return "DELETE_FAILED";
+        Serial.printf("[FILE] deleted=%s\n", path);
+        return nullptr;
+    }
+    const char* renameFile(const char* path, const char* target) {
+        if (!sdReady) return "SD_UNAVAILABLE";
+        FsFile file = sd.open(path, O_RDONLY);
+        if (!file) return "FILE_UNAVAILABLE";
+        bool directory = file.isDirectory();
+        bool closed = file.close();
+        if (directory) return "NOT_A_FILE";
+        if (!closed) return "SD_ERROR";
+        if (sd.exists(target)) return "TARGET_EXISTS";
+        if (!sd.rename(path, target)) return "RENAME_FAILED";
+        Serial.printf("[FILE] renamed=%s target=%s\n", path, target);
+        return nullptr;
+    }
     bool cleanPartial(const char* path) {
         if (!kfs::partialPath(path)) return false;
         FsFile file = sd.open(path, O_RDONLY);
@@ -164,9 +189,9 @@ bool protocolQuiet = false;
 
 void setup() {
     Serial.begin(115200); // Never wait for USB: the satellite must boot untethered.
-    Xbee.setRxBufferSize(1024);
+    Xbee.setRxBufferSize(2048);
     Xbee.begin(XBEE_UART_BAUD, SERIAL_8N1, XBEE_RX, XBEE_TX);
-    Serial.printf("[INFO] KFS1 upload-1 reset_reason=%d SD_SPI_MHZ=%u\n",
+    Serial.printf("[INFO] KFS1 manage-1 reset_reason=%d SD_SPI_MHZ=%u\n",
                   (int)esp_reset_reason(), (unsigned)SD_SPI_MHZ);
     Serial.printf("[INFO] XBee UART: %lu baud\n", (unsigned long)XBEE_UART_BAUD);
     pinMode(CAMERA_CS, OUTPUT); digitalWrite(CAMERA_CS, HIGH);

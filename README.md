@@ -4,7 +4,7 @@ KestrelSAT firmware and course reference material for transferring files and,
 in a future milestone, capturing and previewing images over XBee.
 
 The current working milestone is **remote SD-card browsing and verified file uploads/downloads**
-using the [KestrelSAT GCS Remote Files tab](https://github.com/chasedustevichusafa/KestrelSAT-GCS/tree/feature/remote-upload).
+using the [KestrelSAT GCS Remote Files tab](https://github.com/chasedustevichusafa/KestrelSAT-GCS/tree/feature/remote-file-management).
 The project owner confirmed that the GCS and Lab 8 firmware work together on the
 KestrelSAT/XBee hardware on **October 20, 2026**.
 
@@ -19,7 +19,7 @@ KestrelSAT/XBee hardware on **October 20, 2026**.
 ## Download and run
 
 1. Open this repository's **Actions → Download Lab 8 firmware** and select its
-   latest successful run. Sign into GitHub and download **KestrelSAT-Lab8-Firmware**
+   latest successful run on `feature/remote-file-management`. Sign into GitHub and download **KestrelSAT-Lab8-Firmware**
    under **Artifacts**. This small package avoids the full repository's legacy
    files and long Windows paths.
 2. Extract the ZIP and open **KestrelSAT-Lab8** in PlatformIO. The folder contains
@@ -47,9 +47,16 @@ and compare measured rates on the hardware.
 
 ## Dated changes
 
+- **2026-10-21 — File management:** Added MANAGE1 capability, file-only DELETE
+  and same-folder RENAME, no-overwrite checks and retained results for lost replies.
+  Startup marker is `KFS1 manage-1`. All 24 host protocol tests and both baud-rate
+  builds passed; delete/rename hardware testing remains pending.
+- **2026-10-21 — Upload hardware result:** The project owner confirmed that the
+  matching GCS and upload firmware work together on hardware.
+
 - **2026-10-21 — Verified upload feature:** Added UPLOAD1 capability, bounded
   chunk writes, SD read-back verification, no-replace publication, lost-completion
-  recovery and reserved partial-file cleanup. Upload hardware validation is pending.
+  recovery and reserved partial-file cleanup. The project owner subsequently confirmed uploads work.
 - **2026-10-21 — Stability build hardware result:** The project owner confirmed
   the SD-read recovery build worked on hardware; a measured twenty-transfer
   acceptance result and physical failure source were not established.

@@ -21,7 +21,7 @@ parser.add_argument('--gcs', type=Path, default=PROJECT.parents[2] / 'KestrelSAT
 args, remaining = parser.parse_known_args()
 sys.path.insert(0, str(args.gcs))
 import serial
-from kestrelsat.remote_files import Client, Cancelled, RemoteError, UploadUncertain, encode, decode
+from kestrelsat.remote_files import Client, Cancelled, RemoteError, UploadUncertain, OperationUncertain, encode, decode
 
 
 class FirmwareProtocolTests(unittest.TestCase):
@@ -64,6 +64,79 @@ class FirmwareProtocolTests(unittest.TestCase):
             process.wait(timeout=2)
         self.addCleanup(stop)
         return Client(port, timeout=0.12, attempts=4)
+
+    def test_rename_delete_files_and_preserve_existing_targets(self):
+        client = self.client()
+        opened = client.request('OPEN', '/binary.bin'.encode().hex())
+        with self.assertRaisesRegex(RemoteError, 'BUSY'):
+            client.delete_file('/binary.bin')
+        client.request('CLOSE', opened[1])
+        client.rename_file('/binary.bin', '/renamed.bin')
+        self.assertFalse((self.sd/'binary.bin').exists())
+        self.assertEqual((self.sd/'renamed.bin').read_bytes(), self.payload)
+        with self.assertRaisesRegex(RemoteError, 'TARGET_EXISTS'):
+            client.rename_file('/renamed.bin', '/empty.txt')
+        with self.assertRaisesRegex(RemoteError, 'NOT_A_FILE'):
+            client.delete_file('/images')
+        with self.assertRaisesRegex(RemoteError, 'BAD_PATH'):
+            client.request('RENAME', '/renamed.bin'.encode().hex(), '/images/moved.bin'.encode().hex())
+        with self.assertRaisesRegex(RemoteError, 'BAD_PATH'):
+            client.request('DELETE', '/.kfs-12345678.part'.encode().hex())
+        client.delete_file('/renamed.bin')
+        self.assertFalse((self.sd/'renamed.bin').exists())
+        self.assertTrue((self.sd/'empty.txt').exists())
+
+    def test_management_lost_replies_recover_and_unknown_is_explicit(self):
+        for op in ('delete', 'rename'):
+            for fault in ('manage-drop-reply', 'manage-drop-all', 'manage-expire-reply'):
+                with self.subTest(op=op, fault=fault):
+                    path = self.sd/f'{op}-{fault}.bin'
+                    path.write_bytes(self.payload)
+                    client = self.client(fault)
+                    operation = (lambda: client.delete_file('/'+path.name)) if op == 'delete' else (
+                        lambda: client.rename_file('/'+path.name, '/renamed-'+path.name))
+                    if fault == 'manage-drop-all':
+                        with self.assertRaises(OperationUncertain): operation()
+                    else:
+                        operation()
+                    self.assertFalse(path.exists())
+                    if op == 'rename':
+                        self.assertEqual((self.sd/('renamed-'+path.name)).read_bytes(), self.payload)
+
+    def test_delete_duplicate_after_metadata_query_preserves_recreated_file(self):
+        request = encode(0x12345678, 'DELETE', '/binary.bin'.encode().hex()).decode().strip()
+        # Drive the same service directly to place metadata queries between retries.
+        process = subprocess.Popen([str(self.exe), str(self.sd)], stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, text=True)
+        try:
+            process.stdin.write(request+'\n'); process.stdin.flush()
+            first = process.stdout.readline()
+            self.assertEqual(decode(first.encode())[1], ['DELETED'])
+            (self.sd/'binary.bin').write_bytes(b'new file under the old name')
+            process.stdin.write(encode(44, 'HELLO').decode()+request+'\n'); process.stdin.flush()
+            process.stdout.readline()
+            self.assertEqual(process.stdout.readline(), first)
+            self.assertEqual((self.sd/'binary.bin').read_bytes(), b'new file under the old name')
+        finally:
+            process.stdin.close(); process.stdout.close(); process.terminate(); process.wait(timeout=2)
+
+    def test_management_long_paths_and_backend_failures(self):
+        parent = self.sd/('p'*175)
+        parent.mkdir()
+        (parent/'original.txt').write_bytes(b'long path')
+        client = self.client()
+        old = '/'+parent.name+'/original.txt'
+        new = '/'+parent.name+'/renamed.txt'
+        client.rename_file(old, new)
+        self.assertEqual((parent/'renamed.txt').read_bytes(), b'long path')
+        client.delete_file(new)
+        for op, fault in [('DELETE', 'delete-fail'), ('RENAME', 'rename-fail')]:
+            peer = self.client(fault)
+            args = ['/binary.bin'.encode().hex()]
+            if op == 'RENAME': args.append('/new.bin'.encode().hex())
+            with self.assertRaisesRegex(RemoteError, op+'_FAILED'):
+                peer.request(op, *args)
+            self.assertEqual((self.sd/'binary.bin').read_bytes(), self.payload)
 
     def test_cancel_during_verify_and_after_commit_are_distinguished(self):
         source = self.root/'source'
