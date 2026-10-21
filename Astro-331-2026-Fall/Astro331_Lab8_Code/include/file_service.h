@@ -72,6 +72,26 @@ inline bool decodePath(const char* hex, char* path) {
     }
     return true;
 }
+inline bool partialPath(const char* path) {
+    const char* name = strrchr(path, '/');
+    name = name ? name+1 : path;
+    if (strlen(name) != 18 || strncmp(name, ".kfs-", 5) || strcmp(name+13, ".part")) return false;
+    for (unsigned i = 5; i < 13; ++i) if (nibble(name[i]) < 0) return false;
+    return true;
+}
+inline bool uploadPath(const char* path) {
+    const char* name = strrchr(path, '/');
+    if (!name || !name[1]) return false;
+    ++name;
+    if ((strlen(name) >= 5 && name[0] == '.' && (name[1] | 32) == 'k' &&
+             (name[2] | 32) == 'f' && (name[3] | 32) == 's' && name[4] == '-') ||
+            strlen(path)-strlen(name)+18 > MAX_PATH) return false;
+    for (const char* c = path; *c; ++c) {
+        if (strchr("<>:\"|?*", *c)) return false;
+        if ((*c == '.' || *c == ' ') && (!c[1] || c[1] == '/')) return false;
+    }
+    return true;
+}
 struct Entry {
     char name[MAX_PATH + 1];
     bool directory;
@@ -81,11 +101,17 @@ struct Entry {
 // Backend: list(path,index,entry) -> 1 entry, 0 end, -1 error;
 // open(path,size), readAt(offset,buffer,count,attempt), close(). The open file remains owned by
 // one session, and READ is sequential. END returns the whole-file CRC32.
+// Upload backend methods own an exclusive temporary file through verification
+// and no-replace publication, or cleanup on abort/expiry.
 template<class Backend> class Service {
 public:
     explicit Service(Backend& backend) : backend_(backend) {}
     bool active() const { return active_; }
-    void expire() { backend_.close(); active_ = false; cachedRequest_[0] = 0; }
+    void expire() {
+        if (active_ && uploading_) backend_.abortUpload();
+        else backend_.close();
+        active_ = uploading_ = verifying_ = false; cachedRequest_[0] = 0;
+    }
 
     // Ignore non-protocol text or damaged requests. No unchecked command is run.
     // Returned frame includes newline. The caller writes it as one response.
@@ -118,6 +144,112 @@ public:
         const char* op = fields[2];
         char path[MAX_PATH + 1];
         if (!strcmp(op, "HELLO") && count == 3) return reply("HELLO|1|128");
+        if (!strcmp(op, "CAPS") && count == 3) return reply("CAPS|UPLOAD1|128");
+        if (!strcmp(op, "CLEAN") && count == 4) {
+            if (active_) return reply("ERR|BUSY");
+            if (!decodePath(fields[3], path) || !partialPath(path)) return reply("ERR|BAD_PATH");
+            return reply(backend_.cleanPartial(path) ? "REMOVED" : "ERR|CLEAN_FAILED");
+        }
+        if (!strcmp(op, "PUT") && count == 6) {
+            if (active_) return reply("ERR|BUSY");
+            uint32_t size, crc;
+            if (!decodePath(fields[3], path) || !uploadPath(path)) return reply("ERR|BAD_PATH");
+            if (!number(fields[4], size) || strlen(fields[5]) != 8 || !number(fields[5], crc, 16))
+                return reply("ERR|BAD_SIZE_OR_CRC");
+            char temporary[MAX_PATH+1];
+            const char* name = strrchr(path, '/')+1;
+            size_t prefix = (size_t)(name-path);
+            memcpy(temporary, path, prefix);
+            snprintf(temporary+prefix, sizeof(temporary)-prefix, ".kfs-%08lx.part", (unsigned long)id);
+            const char* error = backend_.beginUpload(path, temporary, size);
+            if (error) { char body[80]; snprintf(body, sizeof(body), "ERR|%s", error); return reply(body); }
+            if (completed_ && completedToken_ == id) completed_ = false;
+            size_ = size; expectedCrc_ = crc; token_ = id; next_ = 0; crc_ = 0xffffffffUL;
+            active_ = uploading_ = true; verifying_ = false; lastWriteLength_ = 0;
+            verifyNext_ = 0; verifyCrc_ = 0xffffffffUL; lastVerify_ = UINT32_MAX;
+            char body[64];
+            snprintf(body, sizeof(body), "READY|%08lx|%lu", (unsigned long)token_, (unsigned long)size_);
+            return reply(body);
+        }
+        if ((!strcmp(op, "WRITE") && count == 6) ||
+            (!strcmp(op, "VERIFY") && count == 5) ||
+            ((!strcmp(op, "COMMIT") || !strcmp(op, "ABORT") || !strcmp(op, "STATUS")) && count == 4)) {
+            uint32_t token;
+            if (!number(fields[3], token, 16)) return reply("ERR|NO_SESSION");
+            if (completed_ && token == completedToken_ &&
+                (!strcmp(op, "COMMIT") || !strcmp(op, "STATUS") || !strcmp(op, "ABORT")))
+                return stored(completedSize_, completedCrc_);
+            if (!active_ || !uploading_ || token != token_) return reply("ERR|NO_SESSION");
+            if (!strcmp(op, "ABORT")) {
+                bool removed = backend_.abortUpload();
+                active_ = uploading_ = verifying_ = false;
+                return reply(removed ? "ABORTED|REMOVED" : "ABORTED|LEFTOVER");
+            }
+            if (!strcmp(op, "STATUS")) return position("UPLOADING", next_);
+            if (!strcmp(op, "WRITE")) {
+                uint32_t offset;
+                size_t length = strlen(fields[5]);
+                if (!number(fields[4], offset) || !length || length % 2 || length/2 > CHUNK)
+                    return reply("ERR|BAD_CHUNK");
+                size_t n = length/2;
+                uint8_t bytes[CHUNK];
+                for (size_t i = 0; i < n; ++i) {
+                    int hi = nibble(fields[5][2*i]), lo = nibble(fields[5][2*i+1]);
+                    if (hi < 0 || lo < 0) return reply("ERR|BAD_CHUNK");
+                    bytes[i] = (uint8_t)((hi << 4) | lo);
+                }
+                // Preserve last WRITE acknowledgment independently of other
+                // requests. A repeated chunk must never be written/CRC'd twice.
+                if (lastWriteLength_ == n && offset == lastWriteOffset_ &&
+                    !memcmp(lastWrite_, bytes, n)) return position("ACK", next_);
+                if (verifying_ || offset != next_ || next_ >= size_ ||
+                    n != (size_-next_ < CHUNK ? size_-next_ : CHUNK)) return reply("ERR|BAD_OFFSET");
+                int got = -1;
+                for (uint8_t attempt = 1; attempt <= READ_ATTEMPTS; ++attempt) {
+                    got = backend_.writeAt(next_, bytes, n, attempt);
+                    if (got == (int)n) break;
+                }
+                if (got != (int)n) return uploadFailure("WRITE_FAILED", next_, n, got);
+                lastWriteOffset_ = next_; lastWriteLength_ = n; memcpy(lastWrite_, bytes, n);
+                crc_ = crcUpdate(crc_, bytes, n); next_ += n;
+                return position("ACK", next_);
+            }
+            if (!strcmp(op, "VERIFY")) {
+                uint32_t offset;
+                if (!number(fields[4], offset)) return reply("ERR|BAD_OFFSET");
+                if (next_ != size_ || (crc_ ^ 0xffffffffUL) != expectedCrc_)
+                    return uploadFailure("SIZE_OR_CRC_MISMATCH", next_, 0, -1);
+                if (verifying_ && offset == lastVerify_) return position("CHECKED", verifyNext_);
+                if (offset != verifyNext_) return reply("ERR|BAD_OFFSET");
+                if (!verifying_) {
+                    if (!backend_.prepareVerify(size_)) return uploadFailure("SYNC_FAILED", next_, 0, -1);
+                    verifying_ = true;
+                }
+                lastVerify_ = offset;
+                // Bounded read-back batches keep progress, retries and Cancel
+                // responsive instead of blocking on an entire large file.
+                uint32_t end = size_-verifyNext_ < 1024 ? size_ : verifyNext_+1024;
+                while (verifyNext_ < end) {
+                    uint8_t bytes[CHUNK];
+                    size_t n = end-verifyNext_ < CHUNK ? end-verifyNext_ : CHUNK;
+                    int got = -1;
+                    for (uint8_t attempt = 1; attempt <= READ_ATTEMPTS; ++attempt) {
+                        got = backend_.readAt(verifyNext_, bytes, n, attempt);
+                        if (got == (int)n) break;
+                    }
+                    if (got != (int)n) return uploadFailure("VERIFY_READ_FAILED", verifyNext_, n, got);
+                    verifyCrc_ = crcUpdate(verifyCrc_, bytes, n); verifyNext_ += n;
+                }
+                return position("CHECKED", verifyNext_);
+            }
+            if (!verifying_ || verifyNext_ != size_) return reply("ERR|INCOMPLETE");
+            if ((verifyCrc_ ^ 0xffffffffUL) != expectedCrc_)
+                return uploadFailure("VERIFY_CRC_MISMATCH", verifyNext_, 0, -1);
+            if (!backend_.commitUpload()) return uploadFailure("COMMIT_FAILED", next_, 0, -1);
+            completed_ = true; completedToken_ = token_; completedSize_ = size_; completedCrc_ = expectedCrc_;
+            active_ = uploading_ = verifying_ = false;
+            return stored(completedSize_, completedCrc_);
+        }
         if (!strcmp(op, "LIST") && count == 5) {
             uint32_t index;
             if (!decodePath(fields[3], path) || !number(fields[4], index) || index > 4096)
@@ -135,6 +267,7 @@ public:
             return reply(body);
         }
         if (!strcmp(op, "OPEN") && count == 4) {
+            if (active_ && uploading_) return reply("ERR|BUSY");
             if (!decodePath(fields[3], path)) return reply("ERR|BAD_PATH");
             backend_.close(); active_ = false;
             if (!backend_.open(path, size_)) return reply("ERR|FILE_UNAVAILABLE");
@@ -146,7 +279,7 @@ public:
         if ((!strcmp(op, "READ") && count == 5) ||
             ((!strcmp(op, "END") || !strcmp(op, "CLOSE")) && count == 4)) {
             uint32_t token;
-            if (!number(fields[3], token, 16) || !active_ || token != token_)
+            if (!number(fields[3], token, 16) || !active_ || uploading_ || token != token_)
                 return reply("ERR|NO_SESSION");
             if (!strcmp(op, "CLOSE")) {
                 backend_.close(); active_ = false; return reply("CLOSED");
@@ -185,6 +318,23 @@ public:
         return reply("ERR|BAD_COMMAND");
     }
 private:
+    const char* position(const char* op, uint32_t offset) {
+        char body[64];
+        snprintf(body, sizeof(body), "%s|%lu|%lu", op, (unsigned long)offset, (unsigned long)size_);
+        return reply(body);
+    }
+    const char* stored(uint32_t size, uint32_t crc) {
+        char body[64];
+        snprintf(body, sizeof(body), "STORED|%lu|%08lx", (unsigned long)size, (unsigned long)crc);
+        return reply(body);
+    }
+    const char* uploadFailure(const char* reason, uint32_t offset, size_t wanted, int got) {
+        backend_.abortUpload(); active_ = uploading_ = verifying_ = false;
+        char body[120];
+        snprintf(body, sizeof(body), "ERR|%s|%lu|%u|%d|%u", reason, (unsigned long)offset,
+                 (unsigned)wanted, got, (unsigned)READ_ATTEMPTS);
+        return reply(body);
+    }
     const char* reply(const char* body) {
         snprintf(response_, sizeof(response_), "@KFS1|%08lx|%s", (unsigned long)id_, body);
         size_t n = strlen(response_);
@@ -193,7 +343,11 @@ private:
         return response_;
     }
     Backend& backend_;
-    bool active_ = false;
+    bool active_ = false, uploading_ = false, verifying_ = false, completed_ = false;
+    uint32_t expectedCrc_ = 0, verifyNext_ = 0, verifyCrc_ = 0xffffffffUL, lastVerify_ = UINT32_MAX;
+    uint32_t lastWriteOffset_ = 0, completedToken_ = 0, completedSize_ = 0, completedCrc_ = 0;
+    size_t lastWriteLength_ = 0;
+    uint8_t lastWrite_[CHUNK] = {};
     uint32_t id_ = 0, token_ = 0, size_ = 0, next_ = 0, crc_ = 0;
     char cachedRequest_[MAX_LINE] = {};
     char response_[MAX_LINE] = {};

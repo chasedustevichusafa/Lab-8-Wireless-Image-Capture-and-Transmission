@@ -5,6 +5,9 @@
 #include <vector>
 #include <algorithm>
 #include <map>
+#include <cctype>
+#include <unistd.h>
+#include <fcntl.h>
 #include "file_service.h"
 
 class HostBackend {
@@ -31,7 +34,7 @@ public:
             auto full = root_ / (path+1);
             if (!std::filesystem::is_regular_file(full)) return false;
             size = (uint32_t)std::filesystem::file_size(full);
-            file_.open(full, std::ios::binary);
+            file_.open(full, std::ios::binary | std::ios::in);
             attempts_.clear(); ++opens_;
             return file_.is_open();
         } catch (...) { return false; }
@@ -52,10 +55,70 @@ public:
         file_.read((char*)bytes, n);
         return (int)file_.gcount();
     }
+    bool fatExists(const std::filesystem::path& path) {
+        auto lower = [](std::string value) {
+            for (char& c : value) c = (char)std::tolower((unsigned char)c);
+            return value;
+        };
+        if (!std::filesystem::is_directory(path.parent_path())) return false;
+        for (auto& item : std::filesystem::directory_iterator(path.parent_path()))
+            if (lower(item.path().filename().string()) == lower(path.filename().string())) return true;
+        return false;
+    }
+    const char* beginUpload(const char* target, const char* temporary, uint32_t) {
+        target_ = root_/(target+1); temporary_ = root_/(temporary+1);
+        if (fatExists(target_)) return "TARGET_EXISTS";
+        if (!std::filesystem::is_directory(target_.parent_path())) return "DIRECTORY_UNAVAILABLE";
+        if (fault_ == "no-space") return "OUT_OF_SPACE";
+        int fd = ::open(temporary_.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+        if (fd < 0) return "CREATE_FAILED";
+        ::close(fd);
+        file_.open(temporary_, std::ios::binary | std::ios::in | std::ios::out);
+        return file_.is_open() ? nullptr : "CREATE_FAILED";
+    }
+    int writeAt(uint32_t offset, const uint8_t* bytes, size_t n, uint8_t attempt) {
+        file_.clear(); file_.seekp(offset);
+        if (!file_) return -1;
+        if (offset >= 512 && fault_ == "write-permanent") return -1;
+        if (offset == 512 && attempt < 3) {
+            if (fault_ == "write-error") return -1;
+            if (fault_ == "write-short") n /= 2;
+        }
+        file_.write((const char*)bytes, n); file_.flush();
+        return file_ ? (int)n : -1;
+    }
+    bool prepareVerify(uint32_t size) {
+        file_.flush();
+        if (fault_ == "sync-fail" || !file_ || std::filesystem::file_size(temporary_) != size) return false;
+        if (fault_ == "verify-corrupt" && size) {
+            file_.seekp(0); file_.put((char)0x7f); file_.flush();
+        }
+        close(); attempts_.clear();
+        file_.open(temporary_, std::ios::binary | std::ios::in);
+        return file_.is_open();
+    }
+    bool commitUpload() {
+        close();
+        if (fault_ == "commit-fail" || fatExists(target_)) return false;
+        // POSIX link provides no-replace publication in this host-only model.
+        if (::link(temporary_.c_str(), target_.c_str()) != 0) return false;
+        return std::filesystem::remove(temporary_);
+    }
+    bool abortUpload() {
+        close();
+        if (fault_ == "abort-fail") return false;
+        if (temporary_.empty() || !std::filesystem::exists(temporary_)) return true;
+        return std::filesystem::remove(temporary_);
+    }
+    bool cleanPartial(const char* path) {
+        auto full = root_/(path+1);
+        return kfs::partialPath(path) && std::filesystem::is_regular_file(full) && std::filesystem::remove(full);
+    }
     void close() { file_.close(); file_.clear(); }
 private:
     std::filesystem::path root_;
-    std::ifstream file_;
+    std::fstream file_;
+    std::filesystem::path target_, temporary_;
     std::string fault_;
     std::map<uint32_t, unsigned> attempts_;
     unsigned opens_ = 0;
@@ -72,6 +135,19 @@ int main(int argc, char** argv) {
         const char* response = service.handle(line.c_str());
         if (!response) continue;
         std::string frame(response);
+        if (fault == "upload-drop-ready" && frame.find("|READY|") != std::string::npos) continue;
+        if (((fault == "upload-drop-commit" && line.find("|COMMIT|") != std::string::npos) ||
+             fault == "upload-drop-terminal") && frame.find("|STORED|") != std::string::npos) continue;
+        if (frame.find("|ACK|") != std::string::npos) {
+            if (fault == "upload-duplicate-write") service.handle(line.c_str());
+            if (!injected) {
+                injected = true;
+                if (fault == "upload-drop-ack") continue;
+                if (fault == "upload-corrupt-ack") frame[frame.size()-3] ^= 1;
+                if (fault == "upload-disconnect") return 0;
+                if (fault == "upload-expire") service.expire();
+            }
+        }
         if (!injected && frame.find("|DATA|") != std::string::npos) {
             injected = true;
             if (fault == "expire") service.expire();

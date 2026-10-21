@@ -3,8 +3,8 @@
 KestrelSAT firmware and course reference material for transferring files and,
 in a future milestone, capturing and previewing images over XBee.
 
-The current working milestone is **remote SD-card browsing and file downloads**
-using the [KestrelSAT GCS Remote Files tab](https://github.com/chasedustevichusafa/KestrelSAT-GCS/tree/feature/remote-files).
+The current working milestone is **remote SD-card browsing and verified file uploads/downloads**
+using the [KestrelSAT GCS Remote Files tab](https://github.com/chasedustevichusafa/KestrelSAT-GCS/tree/feature/remote-upload).
 The project owner confirmed that the GCS and Lab 8 firmware work together on the
 KestrelSAT/XBee hardware on **October 20, 2026**.
 
@@ -12,7 +12,7 @@ KestrelSAT/XBee hardware on **October 20, 2026**.
 
 | Project | Purpose |
 | --- | --- |
-| [Lab 8 firmware](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md) | Current SD browser/download service; upload this project for the GCS Remote Files tab. |
+| [Lab 8 firmware](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md) | Current SD browser and verified upload/download service; upload this project for the GCS Remote Files tab. |
 | [Lab 4](Astro-331-2026-Fall/Astro331_Lab4_Code) | Original communications and SD-card lab reference. |
 | [Lab 5](Astro-331-2026-Fall/Astro331_Lab5_Code) | Original Arducam Mega capture lab reference. |
 
@@ -31,7 +31,7 @@ KestrelSAT/XBee hardware on **October 20, 2026**.
 
 Keep the working board configuration, wiring, radio pairing, and SD card from the
 labs. The file service supports progress, cancellation, retries, and CRC32
-verification. Transfers are read-only and restart after interruption. Camera
+verification. Uploads use temporary files and preserve existing names; both directions restart after interruption. Camera
 capture and live image preview are future work. See the
 [Lab 8 README](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md) for wiring, protocol,
 limits, build commands, and tests.
@@ -47,6 +47,12 @@ and compare measured rates on the hardware.
 
 ## Dated changes
 
+- **2026-10-21 — Verified upload feature:** Added UPLOAD1 capability, bounded
+  chunk writes, SD read-back verification, no-replace publication, lost-completion
+  recovery and reserved partial-file cleanup. Upload hardware validation is pending.
+- **2026-10-21 — Stability build hardware result:** The project owner confirmed
+  the SD-read recovery build worked on hardware; a measured twenty-transfer
+  acceptance result and physical failure source were not established.
 - **2026-10-21 — Transfer stability diagnostic build:** On
   `fix/file-transfer-stability`, added bounded SD read retries at the same byte
   offset, detailed USB error output and `SDCHECK` local read/CRC passes. Automated

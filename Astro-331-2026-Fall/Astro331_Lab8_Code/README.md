@@ -1,11 +1,19 @@
-# Lab 8: remote SD browser and file download
+# Lab 8: remote SD browser and verified file transfers
 
 Upload this project to use the GCS **Remote Files** tab. Labs 4 and 5 are left
-unchanged. This first milestone downloads existing files; it does not yet command
+unchanged. This build supports verified uploads and downloads; it does not yet command
 camera capture or provide live preview.
 
 ## Dated changes
 
+- **2026-10-21 — Verified uploads:** Added capability negotiation, exclusive
+  temporary files, bounded write retries with SD sync, batched read-back CRC
+  verification, no-replace publication and status recovery for lost completion
+  replies. Cancel/expiry clean temporary files; reserved leftovers can be removed
+  from the GCS. Startup marker is `KFS1 upload-1`. Upload hardware testing is pending.
+- **2026-10-21 — Stability result:** The project owner confirmed the preceding
+  read-recovery build worked on hardware. The physical cause and a measured
+  twenty-transfer acceptance result remain unconfirmed.
 - **2026-10-21 — Transfer stability diagnostic build:** Added up to three reads
   of the same chunk before reporting a permanent failure, with position/FAT-state
   restoration before retry. New USB diagnostics report SD errors, failed offsets,
@@ -42,7 +50,7 @@ This small artifact contains only this project. Its source files are verified by
 compressing/extracting them and comparing their checksums on a Windows runner.
 The workflow runs automatically when this project or its packaging workflow
 changes on `main`, `feature/remote-files`, `feature/high-baud-link`, or
-`fix/file-transfer-stability`, including
+`fix/file-transfer-stability`, or `feature/remote-upload`, including
 merges into `main`.
 Manual runs remain available through **Run workflow**.
 
@@ -123,7 +131,7 @@ legacy 802.15.4 API indicators (AO=2); keep that setting and use the updated
 ## Stability diagnostics — 2026-10-21
 
 Use the `fix/file-transfer-stability` source artifact and the matching GCS
-stability build. At startup the satellite USB monitor prints `KFS1 stability-1`,
+stability build. At startup the satellite USB monitor prints `KFS1 upload-1` in the current upload build,
 reset reason, SD SPI clock and the XBee UART baud. SD reads retry at the exact
 same byte offset up to three times, with a 10 ms pause before retries; partial
 attempts do not advance the protocol offset or checksum. Permanent failures
@@ -152,13 +160,59 @@ RSSI polling. The GCS saves bounded metadata captures under `transfer_diagnostic
 The hardware goal is at least 20 consecutive verified downloads per supported
 mode including the largest failing file. Simulated tests do not meet that goal.
 
+## Upload a file — 2026-10-21
+
+Use the matching GCS executable and source artifact on `feature/remote-upload`.
+Select `esp32thing_plus_115200` when uploading firmware for the existing 115200
+radios. Keep the working wiring, SD clock and radio configuration. Confirm the
+satellite USB startup marker `KFS1 upload-1`.
+
+In GCS **Remote Files**, browse to an existing destination folder and Refresh.
+The new firmware advertises `CAPS|UPLOAD1|128`, enabling **Upload...** and
+**Remove partial...**. Select a local file and choose its destination filename.
+Existing names are rejected, including case-insensitive aliases. The final name
+appears only after complete size/CRC verification of data read back from the SD.
+The GCS refreshes the folder and records acknowledged upload rates/RSSI in the
+existing Transfer Stats graphs, CSV logs and PNG exports.
+
+Temporary files are named `.kfs-xxxxxxxx.part` beside the destination. Upload
+names cannot use that prefix (case-insensitive), FAT-reserved characters or
+trailing dots/spaces. Paths are limited to 192 UTF-8 bytes and must leave room
+for that temporary name; files are limited to 4 GiB minus one byte. Creation
+requires an existing folder and available space. Every 128-byte write is synced
+before ACK, with up to three attempts. Retries reopen only the session's own
+temporary file and write at the original offset. Verification processes up to
+1024 bytes per request so large files retain progress/cancellation.
+
+COMMIT checks received and stored CRCs before renaming with a no-existing-target
+requirement. Lost COMMIT replies can be recovered through retained STATUS or a
+repeated COMMIT; the last completion result survives idle expiry but is held in
+RAM and is lost on reset. An unconfirmed outcome is explicitly reported by the
+GCS. Verify the destination before retrying in that case. Filesystem rename is
+not a power-loss transaction.
+
+Cancel and idle expiry attempt to remove the temporary file. After a reset or
+failed cleanup, Refresh, select the reserved `.part` entry and use **Remove
+partial...**, confirming its path. Cleanup rejects ordinary filenames,
+directories and active sessions. Incomplete uploads restart rather than resume.
+USB diagnostics include SD_WRITE attempts, publication and cleanup results;
+the GCS records bounded metadata-only diagnostics without file payloads.
+
+New KFS1 operations are CAPS, PUT, WRITE, VERIFY, COMMIT, STATUS, ABORT and CLEAN.
+HELLO/download commands remain compatible. See the [complete upload protocol and
+hardware checklist](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/feature/remote-upload/docs/remote-upload.md).
+For acceptance, upload/download-compare empty, small, 14 KB JPEG and larger binary
+files, then test Cancel/disconnect and repeated runs with API RSSI polling on/off.
+Automated simulation and compilation do not establish physical upload reliability.
+
 ## Hardware test
 
 Start the updated GCS executable, connect to the ground XBee COM port at 9600,
 then **Remote Files → Refresh / Open**. Browse `/`, double-click folders, select a
 file and **Download…**. Start with a small known text file, then a JPEG and a larger
 binary file. Compare downloaded contents against the SD originals. Test Cancel
-and reconnect as well. Transfers are read-only and restart rather than resume.
+and reconnect as well. Downloads preserve SD contents; uploads require a new
+filename. Both directions restart rather than resume.
 The original Lab 4/5 firmware does not implement these commands.
 
 See the GCS repository's `docs/remote-files.md` for the Windows build/download
