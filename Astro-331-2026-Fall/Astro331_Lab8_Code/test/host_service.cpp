@@ -4,11 +4,12 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
+#include <map>
 #include "file_service.h"
 
 class HostBackend {
 public:
-    explicit HostBackend(std::filesystem::path root) : root_(root) {}
+    explicit HostBackend(std::filesystem::path root, std::string fault) : root_(root), fault_(fault) {}
     int list(const char* path, uint32_t index, kfs::Entry& entry) {
         try {
             std::vector<std::filesystem::directory_entry> files;
@@ -31,10 +32,23 @@ public:
             if (!std::filesystem::is_regular_file(full)) return false;
             size = (uint32_t)std::filesystem::file_size(full);
             file_.open(full, std::ios::binary);
+            attempts_.clear(); ++opens_;
             return file_.is_open();
         } catch (...) { return false; }
     }
-    int read(uint8_t* bytes, size_t n) {
+    int readAt(uint32_t offset, uint8_t* bytes, size_t n, uint8_t) {
+        file_.clear();
+        file_.seekg(offset);
+        if (!file_) return -1;
+        unsigned attempt = attempts_[offset]++;
+        if (fault_ == "read-permanent" && offset >= 4096) return -1;
+        bool fail = (offset == 4096 && attempt < 2) ||
+                    (fault_ == "read-scattered" && (offset / 128 + opens_) % 17 == 5 && attempt < 2);
+        if (fail) {
+            if (fault_ == "read-error" || fault_ == "read-scattered") return -1;
+            if (fault_ == "read-zero") return 0;
+            if (fault_ == "read-short") n /= 2;
+        }
         file_.read((char*)bytes, n);
         return (int)file_.gcount();
     }
@@ -42,10 +56,13 @@ public:
 private:
     std::filesystem::path root_;
     std::ifstream file_;
+    std::string fault_;
+    std::map<uint32_t, unsigned> attempts_;
+    unsigned opens_ = 0;
 };
 int main(int argc, char** argv) {
     if (argc < 2) return 2;
-    HostBackend backend(argv[1]);
+    HostBackend backend(argv[1], argc > 2 ? argv[2] : "");
     kfs::Service<HostBackend> service(backend);
     std::string line, fault = argc > 2 ? argv[2] : "";
     bool injected = false;
@@ -57,6 +74,7 @@ int main(int argc, char** argv) {
         std::string frame(response);
         if (!injected && frame.find("|DATA|") != std::string::npos) {
             injected = true;
+            if (fault == "expire") service.expire();
             if (fault == "drop") continue;
             if (fault == "corrupt") frame[frame.size()-3] = frame[frame.size()-3] == '0' ? '1' : '0';
             if (fault == "truncate") frame = frame.substr(0, 12);
