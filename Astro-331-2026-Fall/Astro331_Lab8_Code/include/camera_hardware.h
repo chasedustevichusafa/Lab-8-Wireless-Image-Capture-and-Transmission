@@ -8,6 +8,8 @@ class CameraHardware {
 public:
     void begin() {
         instance_ = this;
+        ready_ = false; lastInit_ = millis(); attempted_ = true;
+        digitalWrite(CAMERA_CS, HIGH);
         delay(200); // Same power-up settling time used by Lab 5.
         cameraTransaction();
         uint8_t id = 0;
@@ -31,12 +33,15 @@ public:
         operations_.setCapture = startOnly;
         camera_.arducamCameraOp = &operations_;
         camera_.lowPowerMode = 0;
-        deadline_ = millis()+2000; timedOut_ = false;
+        deadline_ = millis()+4000; timedOut_ = false;
         cameraTransaction(); ::begin(&camera_); SPI.endTransaction();
         ready_ = !timedOut_ && camera_.cameraId >= 0x81 && camera_.cameraId <= 0x87;
         fault_ = ready_ ? "NONE" : "CAMERA_INIT_TIMEOUT";
         Serial.printf("[CAMERA] sensor=0x%02x model=%s mask=%lu status=%s\n", camera_.cameraId,
                       model(), (unsigned long)mask(), fault_);
+    }
+    void retry() {
+        if (!ready_ && (!attempted_ || (uint32_t)(millis()-lastInit_) >= 3000)) begin();
     }
     bool ready() const { return ready_; }
     const char* model() const { return ready_ ? camera_.myCameraInfo.cameraId : "unknown"; }
@@ -54,21 +59,27 @@ public:
     int poll(uint32_t& size) {
         cameraTransaction();
         uint8_t state = camera_.arducamCameraOp->readReg(&camera_, 0x44);
-        if (state == 0xff) { SPI.endTransaction(); return -1; }
+        if (state == 0xff) {
+            SPI.endTransaction(); ready_ = false; fault_ = "CAMERA_DISCONNECTED"; return -1;
+        }
         bool complete = state & 0x04;
         if (complete) {
             size = camera_.arducamCameraOp->readFifoLength(&camera_);
             camera_.totalLength = camera_.receivedLength = size;
             camera_.burstFirstFlag = 0;
+            Serial.printf("[CAMERA] fifo_bytes=%lu reader=single\n", (unsigned long)size);
         }
         SPI.endTransaction();
         return complete ? 1 : 0;
     }
     int readCamera(uint8_t* bytes, size_t n) {
+        if (n > camera_.receivedLength) return -1;
         cameraTransaction();
-        int got = (int)::readBuff(&camera_, bytes, n);
+        // Match the vendor capture2SD example: independent byte reads have no
+        // resumed-burst/dummy-byte state to preserve across SD transactions.
+        for (size_t i = 0; i < n; ++i) bytes[i] = ::readByte(&camera_);
         SPI.endTransaction();
-        return got;
+        return (int)n;
     }
     void stop() {
         digitalWrite(CAMERA_CS, HIGH);
@@ -160,8 +171,8 @@ private:
     static CameraHardware* instance_;
     ArducamCamera camera_ = {};
     CameraOperations operations_ = {};
-    bool ready_ = false, timedOut_ = false;
-    uint32_t deadline_ = 0, verifyOffset_ = 0;
+    bool ready_ = false, timedOut_ = false, attempted_ = false;
+    uint32_t deadline_ = 0, verifyOffset_ = 0, lastInit_ = 0;
     const char* fault_ = "CAMERA_NOT_FOUND";
     FsFile file_;
     char path_[kfs::MAX_PATH+1] = {}, temporary_[64] = {};

@@ -46,6 +46,12 @@ and compare measured rates on the hardware.
 
 ## Remote camera capture — 2026-10-21
 
+**2026-10-22 follow-up:** Camera-2 corrects FIFO/JPEG framing and uses the vendor
+SD-example read method, retries failed detection through Refresh, and adds byte
+count/boundary diagnostics. An optional GPIO27 CS environment supports testing
+the GPIO12 boot-strap explanation for camera-connected flash MD5 errors. See
+[the upload/wiring and capture-retest procedure](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#camera-uploaddetection-failures--2026-10-22).
+
 Use matching GCS and firmware downloads from `feature/remote-camera`. Upload
 `esp32thing_plus_115200` for the current radios, keeping existing baud/AP settings.
 The new GCS **Camera** page selects supported resolutions, captures a JPEG to SD,

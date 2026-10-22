@@ -1,6 +1,7 @@
 // Bounded, cooperative capture/save/read-back engine. No whole-image buffers.
 #pragma once
 #include "file_service.h"
+#include "jpeg_stream.h"
 
 namespace kcam {
 static const uint32_t MAX_IMAGE = 8UL*1024*1024;
@@ -29,7 +30,8 @@ public:
         if (error) return error;
         id_ = id; mode_ = mode; strcpy(path_, path); known_ = true;
         started_ = now; done_ = size_ = 0; crc_ = verifyCrc_ = 0xffffffffUL;
-        first_[0] = first_[1] = last_[0] = last_[1] = 0;
+        fifoSize_ = read_ = saved_ = prefix_ = 0; jpeg_ = JpegStream();
+        memset(first_, 0, sizeof(first_)); memset(last_, 0, sizeof(last_));
         error_ = "NONE"; phase_ = Capture;
         if (!hw_.start(mode)) fail("CAMERA_START_FAILED");
         return nullptr;
@@ -46,19 +48,29 @@ public:
                 return;
             }
             if (size_ < 4 || size_ > MAX_IMAGE) { fail("BAD_IMAGE_SIZE"); return; }
+            fifoSize_ = size_;
             if (!hw_.space(size_)) { fail("OUT_OF_SPACE"); return; }
             phase_ = Save;
         } else if (phase_ == Save) {
             size_t n = size_-done_; if (n > sizeof(bytes)) n = sizeof(bytes);
             if (hw_.readCamera(bytes, n) != (int)n) { fail("CAMERA_READ_FAILED"); return; }
-            if (!done_) { first_[0] = bytes[0]; first_[1] = bytes[1]; }
-            for (size_t i = 0; i < n; ++i) { last_[0] = last_[1]; last_[1] = bytes[i]; }
-            if (!hw_.writeSD(bytes, n)) { fail("SD_WRITE_FAILED"); return; }
-            crc_ = kfs::crcUpdate(crc_, bytes, n); done_ += n;
+            // A start marker can straddle blocks, so output may be n+1 bytes.
+            uint8_t output[sizeof(bytes)+2]; size_t used = 0;
+            for (size_t i = 0; i < n; ++i) {
+                if (read_ < sizeof(first_)) first_[read_] = bytes[i];
+                memmove(last_, last_+1, sizeof(last_)-1); last_[sizeof(last_)-1] = bytes[i];
+                ++read_;
+                JpegStream::Result result = jpeg_.push(bytes[i]);
+                if (result == JpegStream::Invalid) { fail("INVALID_JPEG"); return; }
+                if (result == JpegStream::Start) {
+                    prefix_ = read_-2; output[used++] = 0xff; output[used++] = 0xd8;
+                } else if (result == JpegStream::Byte || result == JpegStream::End) output[used++] = bytes[i];
+            }
+            if (used && !hw_.writeSD(output, used)) { fail("SD_WRITE_FAILED"); return; }
+            crc_ = kfs::crcUpdate(crc_, output, used); saved_ += used; done_ += n;
             if (done_ == size_) {
-                if (first_[0] != 0xff || first_[1] != 0xd8 || last_[0] != 0xff || last_[1] != 0xd9) {
-                    fail("INVALID_JPEG"); return;
-                }
+                if (!jpeg_.complete()) { fail("INVALID_JPEG"); return; }
+                size_ = saved_; // Published size/CRC describe the JPEG, not FIFO padding.
                 if (!hw_.prepareVerify(size_)) { fail("SD_SYNC_FAILED"); return; }
                 phase_ = Verify; done_ = 0;
             }
@@ -87,6 +99,14 @@ public:
         snprintf(body, capacity, "CAMJOB|%08lx|%s|%lu|%lu|%08lx|%s|%s", (unsigned long)id_, states[phase_],
                  (unsigned long)done_, (unsigned long)size_, (unsigned long)(crc_^0xffffffffUL), encoded, error_);
     }
+    void diagnostics(uint32_t id, char* body, size_t capacity) const {
+        if (!known_ || id != id_) { snprintf(body, capacity, "ERR|UNKNOWN_JOB"); return; }
+        char first[17], last[17];
+        kfs::hexEncode(first_, sizeof(first_), first); kfs::hexEncode(last_, sizeof(last_), last);
+        snprintf(body, capacity, "CAMDETAIL|%08lx|%lu|%lu|%lu|%lu|%s|%s|%s",
+                 (unsigned long)id_, (unsigned long)fifoSize_, (unsigned long)read_,
+                 (unsigned long)saved_, (unsigned long)prefix_, first, last, error_);
+    }
 private:
     void fail(const char* error) {
         bool cleaned = hw_.cleanup(); hw_.stop();
@@ -103,6 +123,8 @@ private:
     char path_[kfs::MAX_PATH+1] = {};
     const char* error_ = "NONE";
     char errorText_[80] = {};
-    uint8_t first_[2] = {}, last_[2] = {};
+    JpegStream jpeg_;
+    uint32_t fifoSize_ = 0, read_ = 0, saved_ = 0, prefix_ = 0;
+    uint8_t first_[8] = {}, last_[8] = {};
 };
 } // namespace kcam

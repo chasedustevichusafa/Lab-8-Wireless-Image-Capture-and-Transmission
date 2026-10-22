@@ -150,7 +150,7 @@ public:
         const char* op = fields[2];
         char path[MAX_PATH + 1];
         if (!strcmp(op, "HELLO") && count == 3) return reply("HELLO|1|128");
-        if (!strcmp(op, "CAPS") && count == 3) return reply("CAPS|UPLOAD1|MANAGE1|CAMERA1|128");
+        if (!strcmp(op, "CAPS") && count == 3) return reply("CAPS|UPLOAD1|MANAGE1|CAMERA1|CAMDIAG1|128");
         if (!strcmp(op, "CAMINFO") && count == 3) {
             char body[128]; backend_.cameraInfo(body, sizeof(body)); return reply(body);
         }
@@ -168,6 +168,11 @@ public:
             if (strlen(fields[3]) != 8 || !number(fields[3], job, 16)) return reply("ERR|BAD_JOB");
             if (!strcmp(op, "CAMABORT")) backend_.cameraAbort(job);
             char body[600]; backend_.cameraStatus(job, body, sizeof(body)); return reply(body);
+        }
+        if (!strcmp(op, "CAMDIAG") && count == 4) {
+            uint32_t job;
+            if (strlen(fields[3]) != 8 || !number(fields[3], job, 16)) return reply("ERR|BAD_JOB");
+            char body[240]; backend_.cameraDiagnostics(job, body, sizeof(body)); return reply(body);
         }
         if (backend_.cameraBusy()) return reply("ERR|BUSY");
         if (!strcmp(op, "RESULT") && count == 4) {

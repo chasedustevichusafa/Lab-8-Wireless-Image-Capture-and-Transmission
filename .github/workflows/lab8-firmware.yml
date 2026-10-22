@@ -30,8 +30,8 @@ jobs:
           }
           $files = Get-ChildItem $destination -Recurse -File
           foreach ($required in @('platformio.ini', 'README.md', 'src/main.cpp',
-                                  'include/file_service.h', 'include/camera_job.h', 'include/camera_hardware.h',
-                                  'test/host_service.cpp', 'test/host_camera.h', 'test/test_protocol.py',
+                                  'include/file_service.h', 'include/camera_job.h', 'include/camera_hardware.h', 'include/jpeg_stream.h',
+                                  'test/host_service.cpp', 'test/host_camera.h', 'test/host_camera_hardware.cpp', 'test/test_protocol.py',
                                   'lib/Arducam_Mega-3.0.0/src/Arducam_Mega.h',
                                   'lib/Arducam_Mega-3.0.0/src/Arducam/ArducamCamera.c',
                                   'lib/Arducam_Mega-3.0.0/LICENSE')) {

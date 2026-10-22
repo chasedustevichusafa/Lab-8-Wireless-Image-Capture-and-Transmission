@@ -28,6 +28,7 @@ public:
         cameraJob_.tick(cameraClock_);
     }
     void cameraStatus(uint32_t id, char* body, size_t n) { cameraJob_.status(id, body, n); }
+    void cameraDiagnostics(uint32_t id, char* body, size_t n) { cameraJob_.diagnostics(id, body, n); }
     void cameraAbort(uint32_t id) { cameraJob_.abort(id); }
     int list(const char* path, uint32_t index, kfs::Entry& entry) {
         try {

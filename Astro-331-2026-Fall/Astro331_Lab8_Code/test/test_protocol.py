@@ -14,6 +14,8 @@ import threading
 import tty
 import unittest
 import zlib
+import io
+from PIL import Image
 
 PROJECT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
@@ -33,6 +35,14 @@ class FirmwareProtocolTests(unittest.TestCase):
         subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
                         '-I', str(PROJECT / 'include'), str(PROJECT / 'test/host_service.cpp'),
                         '-o', str(cls.exe)], check=True)
+        vendor = PROJECT/'lib/Arducam_Mega-3.0.0/src'
+        driver = Path(cls.build.name)/'camera-driver.o'
+        subprocess.run(['gcc', '-DESP32', '-w', '-I', str(vendor/'Arducam'), '-c',
+                        str(vendor/'Arducam/ArducamCamera.c'), '-o', str(driver)], check=True)
+        cls.hardware = Path(cls.build.name)/'camera-hardware'
+        subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', str(PROJECT/'include'),
+                        '-I', str(vendor), str(PROJECT/'test/host_camera_hardware.cpp'), str(driver),
+                        '-o', str(cls.hardware)], check=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -69,6 +79,9 @@ class FirmwareProtocolTests(unittest.TestCase):
     def camera(self, fault=''):
         peer = self.client(fault)
         return CameraClient(peer.port, timeout=.12, attempts=4)
+
+    def test_camera_production_adapter_with_vendor_driver(self):
+        subprocess.run([str(self.hardware)], check=True, timeout=5)
 
     def test_camera_capture_save_verify_download_and_duplicate_protection(self):
         client = self.camera()
@@ -107,11 +120,56 @@ class FirmwareProtocolTests(unittest.TestCase):
         result = client.wait_capture(pending, initial, poll_interval=.001)
         self.assertEqual(result['state'], 'SAVED')
         self.assertEqual(len(list((self.sd/'images').glob('*_'+pending['job']+'.jpg'))), 1)
+
         client = self.camera('camera-drop-status')
         pending = new_capture(5)
         with self.assertRaises(OperationUncertain):
             client.start_capture(pending)
         self.assertEqual(len(list((self.sd/'images').glob('*_'+pending['job']+'.jpg'))), 1)
+
+    def test_camera_fifo_prefix_padding_and_split_markers_preserve_real_jpeg(self):
+        stream = io.BytesIO()
+        Image.new('RGB', (96, 96), (50, 100, 150)).save(stream, 'JPEG')
+        photo = stream.getvalue()
+        # EOI inside an APP/EXIF-like payload must not truncate the outer JPEG.
+        metadata = b'thumbnail\xff\xd8embedded\xff\xd9metadata'
+        photo = photo[:2]+b'\xff\xe1'+(len(metadata)+2).to_bytes(2, 'big')+metadata+photo[2:]
+        for prefix in (b'', b'\x00'*255, b'\xff\x00junk', b'\x00'*((257-len(photo)) % 256)):
+            with self.subTest(prefix=len(prefix)):
+                raw = prefix+photo+b'\x00\xff\x00\xff'*4
+                (self.sd/'fifo.bin').write_bytes(raw)
+                client = self.camera('camera-fixture')
+                pending = new_capture(0)
+                result = client.wait_capture(pending, client.start_capture(pending), poll_interval=.001)
+                self.assertEqual(result['state'], 'SAVED', result)
+                path = self.sd/pending['path'][1:]
+                self.assertEqual(path.read_bytes(), photo)
+                self.assertEqual(result['total'], len(photo))
+                self.assertEqual(result['crc'], f'{zlib.crc32(photo):08x}')
+                detail = client.capture_diagnostics(pending['job'])
+                self.assertEqual((detail['fifo_bytes'], detail['read_bytes'], detail['saved_bytes'],
+                                  detail['prefix_bytes']), (len(raw), len(raw), len(photo), len(prefix)))
+                with Image.open(path) as decoded:
+                    decoded.load(); self.assertEqual(decoded.size, (96, 96))
+                downloaded = self.root/(pending['job']+'.jpg')
+                client.download(pending['path'], downloaded)
+                self.assertEqual(downloaded.read_bytes(), photo)
+                self.assertEqual(client.capture_diagnostics(pending['job'])['error'], 'NONE')
+
+    def test_camera_truncated_or_malformed_fifo_does_not_publish(self):
+        stream = io.BytesIO(); Image.new('RGB', (96, 96)).save(stream, 'JPEG')
+        photo = stream.getvalue()
+        for raw in (photo[:-1], b'\x00'*300, b'\xff\xd8\xff\xd9',
+                    b'\xff\xd8\xff\xe1\x00\x01', b'\xff\xd8\xff\xe1\xff\xff'+photo[2:]):
+            with self.subTest(length=len(raw)):
+                (self.sd/'fifo.bin').write_bytes(raw)
+                client = self.camera('camera-fixture'); pending = new_capture(0)
+                result = client.wait_capture(pending, client.start_capture(pending), poll_interval=.001)
+                self.assertEqual(result['error'], 'INVALID_JPEG')
+                self.assertFalse((self.sd/pending['path'][1:]).exists())
+                self.assertFalse(list((self.sd/'images').glob('.kfs-*.part')))
+                self.assertIsNotNone(client.capture_diagnostics(pending['job']))
+                self.assertTrue(client.list_directory('/'))
 
     def test_camera_rejections_preserve_files_and_active_transfers(self):
         client = self.camera()

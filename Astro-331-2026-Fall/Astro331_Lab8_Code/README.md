@@ -6,6 +6,15 @@ uploads/downloads. Viewing is an on-demand download; no live preview is started.
 
 ## Dated changes
 
+- **2026-10-22 — Camera capture recovery:** Followed the vendor capture2SD
+  read/framing approach instead of requiring FIFO bytes to equal JPEG boundaries.
+  The streaming framer handles padding, split markers and embedded thumbnail
+  markers, while retaining full SD CRC read-back. Refresh images can retry failed
+  initialization without reconnecting. Optional CAMDIAG1 metadata reports FIFO/
+  read/saved counts and boundary samples. Added an opt-in GPIO27 camera-CS
+  environment to investigate GPIO12 boot/flash interference. Startup marker is
+  `KFS1 camera-2`. Physical retesting remains required; see the procedure below.
+
 - **2026-10-21 — Remote camera:** Added CAMERA1 capability and capture/status/
   abort jobs, JPEG-boundary and full SD CRC read-back checks, local-time/resolution
   naming through the GCS, and last-job recovery. The copied Lab 5 driver remains
@@ -85,6 +94,62 @@ USB debug output is 115200 baud. Use the same power/ground wiring as the labs.
 The camera and SD card use separate chip selects and SPI transactions; camera
 CS is released before each SD operation.
 
+### Camera upload/detection failures — 2026-10-22
+
+The first camera hardware test reported flash MD5 mismatches when attached,
+intermittent detection, then `INVALID_JPEG` after 1,840 bytes at 96×96. The radio
+log showed no retries, timeouts or malformed replies. The old capture code assumed
+FIFO size exactly matched the JPEG; the vendor
+[capture2SD example](https://github.com/ArduCAM/Arducam_Mega/blob/main/examples/ArduinoUNO/capture2SD/capture2SD.ino)
+instead seeks the JPEG start marker and stops at its end marker. Camera-2 uses
+that example's single-byte read primitive and a streaming marker/segment-length
+framer, then verifies the extracted JPEG on SD before publication. Invalid frames
+still fail with cleanup. The old log lacks image bytes, so the exact physical
+padding/readout fault remains unconfirmed. Single-byte reads can save more slowly
+at large resolutions; the 120-second whole-job deadline remains bounded.
+
+**GPIO12 is also the ESP32 MTDI boot strap.** A connected camera holding it high
+at reset can select 1.8 V for a board with 3.3 V flash, preventing flashing/boot.
+See [Espressif's boot-pin documentation](https://docs.espressif.com/projects/esptool/en/latest/esp32/advanced-topics/boot-mode-selection.html).
+This is a plausible cause of the reported MD5 mismatch, not proven by that error;
+power instability can also cause it. Firmware cannot control boot straps during
+ROM flashing. The lab board identifier and flash verification are preserved.
+
+An optional environment avoids this pin without changing the working lab defaults:
+
+1. Disconnect **all power**. Confirm GPIO27 is otherwise unused on your hardware.
+2. Move only the camera **CS** wire from GPIO12 to **GPIO27**; retain SD, SPI,
+   supply and ground wiring.
+3. Upload **`esp32thing_plus_115200_camera_cs27`** and confirm `KFS1 camera-2`
+   and `camera_cs=27` in the USB monitor. Do not select this environment with
+   the camera still wired to GPIO12. Existing environments retain GPIO12.
+4. Keep working radio/AP settings. In the matching GCS Camera tab, Refresh
+   images, select **320×240**, Capture, then View. Repeat at 96×96 and 640×480.
+5. If camera detection fails, wait three seconds and Refresh images to retry
+   initialization, without resetting the working radio link. Ready cameras are
+   not reset by Refresh. Retries are skipped during active file/camera jobs.
+
+```sh
+pio run -e esp32thing_plus_115200_camera_cs27
+pio run -e esp32thing_plus_115200_camera_cs27 -t upload
+```
+
+If flashing still fails, disconnect the camera with all power off, upload, then
+power down before reconnecting it. Do not hot-plug wiring, disable MD5 checks or
+burn flash-voltage eFuses. Keep its rated supply connection; verify the camera
+model and actual power wiring before changing voltage. A stated 5 V connection
+does not establish supply stability. If the alternate CS pin does not resolve
+boot/upload failures, collect reset/startup output and check supply/ground/cables.
+
+Camera-2 advertises optional `CAMDIAG1`. `CAMDIAG|job_hex` returns
+`CAMDETAIL|job_hex|fifo_bytes|read_bytes|saved_bytes|prefix_bytes|first_8_bytes_hex|last_8_bytes_hex|error`.
+The GCS saves this bounded metadata as `camera_detail` in its JSONL diagnostic,
+including failed captures. Counts/CRC in a successful CAMJOB describe only the
+extracted JPEG. Marker/segment checks do not replace full GCS JPEG decoding.
+Automated regression includes real padded JPEGs, marker splits, embedded thumbnail
+markers, malformed/truncated frames and a fake-bus test of the production adapter
+with the unchanged vendor driver. These checks do not establish hardware timing.
+
 Open **this folder** in PlatformIO, then Build and Upload:
 
 ```sh
@@ -145,7 +210,7 @@ legacy 802.15.4 API indicators (AO=2); keep that setting and use the updated
 ## Stability diagnostics — 2026-10-21
 
 Use the `fix/file-transfer-stability` source artifact and the matching GCS
-stability build. At startup the satellite USB monitor prints `KFS1 camera-1` in the current camera build,
+stability build. At startup the satellite USB monitor prints `KFS1 camera-2` in the current camera build,
 reset reason, SD SPI clock and the XBee UART baud. SD reads retry at the exact
 same byte offset up to three times, with a 10 ms pause before retries; partial
 attempts do not advance the protocol offset or checksum. Permanent failures
@@ -253,7 +318,7 @@ Extract the **matching camera** GCS executable and this source ZIP from
 under `lib/Arducam_Mega-3.0.0`; no Lab 5 checkout is needed to build this package.
 Labs 4/5 remain unmodified references. Use PlatformIO **Project Tasks →
 esp32thing_plus_115200 → Upload** for the existing 115200 radios; the default
-`esp32thing_plus` remains 9600. Confirm USB startup marker `KFS1 camera-1` and the
+`esp32thing_plus` remains 9600. Confirm USB startup marker `KFS1 camera-2` and the
 camera sensor/model/status line. Retain existing radio AP/baud/network settings.
 
 In GCS **Camera → Refresh images**, select a supported resolution (640×480 by
@@ -280,16 +345,18 @@ inspection of `/images`, not automatic recapture. Files remain on SD. Incomplete
 Files partial-cleanup control. A cleanup failure is explicit. Publication is not
 a power-loss transaction; inspect after interruption.
 
-Camera control waits share a 2-second budget, capture completion is polled with a
+Camera initialization waits have a 4-second budget and capture control waits a
+2-second budget; capture completion is polled with a
 15-second limit and a whole capture/save/verify job has a 120-second limit. Data
 moves in 256-byte buffers; no whole-image allocation is used. Camera SPI uses
 1 MHz transactions, while the existing SD clock is preserved. SD read/write
 retries retain the same offset and write retries reuse buffered camera data.
 File operations are blocked while a job is active; camera status/abort remain
 available. Missing cameras do not stop the file service. Check power/wiring and
-reset after fixing an initialization fault. USB prints camera and SD error details.
+Refresh images after fixing an initialization fault. USB prints camera and SD
+error details.
 
-CAPS becomes `CAPS|UPLOAD1|MANAGE1|CAMERA1|128`; HELLO/file chunks remain compatible.
+CAPS becomes `CAPS|UPLOAD1|MANAGE1|CAMERA1|CAMDIAG1|128`; HELLO/file chunks remain compatible.
 `CAMINFO` returns model, supported-resolution mask, camera error and SD state.
 `CAPTURE|job_hex|mode_index|path_hex`, `CAMSTATUS|job_hex`, and `CAMABORT|job_hex`
 return `CAMJOB|job_hex|state|done|total|crc32|path_hex|error`. Capture paths are
@@ -299,10 +366,11 @@ rejected. The GCS exposes Stop waiting and Check capture, not automatic CAMABORT
 
 Image downloads participate in existing speed/RSSI measurements. Multi-operation
 recordings include capture events; onboard capture/save is zero useful file
-throughput until a download begins. All 30 portable protocol tests pass, including
+throughput until a download begins. All 33 portable protocol tests pass, including
 loss/retry, duplicate jobs, camera/job timeouts, SD failure/corruption, collision
-protection and partial cleanup. Both firmware baud variants compile. These checks
-use a host camera model and do not establish physical camera operation.
+protection, partial cleanup, padded real JPEGs and the production camera adapter
+with a fake bus. Both baud variants and the optional GPIO27 build compile. These
+checks do not establish physical camera operation.
 
 On hardware, first capture 320×240 or 640×480, View and check decoded dimensions,
 Download/compare copies, then rename/delete a disposable image. Test higher
@@ -360,7 +428,8 @@ handles across canceled listings. The GCS caps listings at 4096 entries.
 
 ## Automated compatibility tests
 
-On Linux with a C++17 host compiler and the GCS Python dependencies installed:
+On Linux with GCC/G++ (C and C++17) and the pinned GCS Python dependencies
+(including Pillow) installed:
 
 ```sh
 python test/test_protocol.py --gcs /path/to/KestrelSAT-GCS -v
