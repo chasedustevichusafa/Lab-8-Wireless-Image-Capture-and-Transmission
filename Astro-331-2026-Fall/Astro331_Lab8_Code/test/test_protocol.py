@@ -159,7 +159,7 @@ class FirmwareProtocolTests(unittest.TestCase):
     def test_camera_truncated_or_malformed_fifo_does_not_publish(self):
         stream = io.BytesIO(); Image.new('RGB', (96, 96)).save(stream, 'JPEG')
         photo = stream.getvalue()
-        for raw in (photo[:-1], b'\x00'*300, b'\xff\xd8\xff\xd9',
+        for raw in (photo[:-1], b'\x00'*300, b'\xff\xd8\xff\xd9', b'\xff\xd8garbage'+b'\x00'*300,
                     b'\xff\xd8\xff\xe1\x00\x01', b'\xff\xd8\xff\xe1\xff\xff'+photo[2:]):
             with self.subTest(length=len(raw)):
                 (self.sd/'fifo.bin').write_bytes(raw)
@@ -168,7 +168,13 @@ class FirmwareProtocolTests(unittest.TestCase):
                 self.assertEqual(result['error'], 'INVALID_JPEG')
                 self.assertFalse((self.sd/pending['path'][1:]).exists())
                 self.assertFalse(list((self.sd/'images').glob('.kfs-*.part')))
-                self.assertIsNotNone(client.capture_diagnostics(pending['job']))
+                detail = client.capture_diagnostics(pending['job'])
+                self.assertIsNotNone(detail)
+                if raw.startswith(b'\xff\xd8garbage'):
+                    # The full block was consumed before parsing found byte 3 bad.
+                    self.assertEqual(detail['read_bytes'], 256)
+                    self.assertEqual(detail['first_hex'], raw[:8].hex())
+                    self.assertEqual(detail['last_hex'], raw[248:256].hex())
                 self.assertTrue(client.list_directory('/'))
 
     def test_camera_rejections_preserve_files_and_active_transfers(self):

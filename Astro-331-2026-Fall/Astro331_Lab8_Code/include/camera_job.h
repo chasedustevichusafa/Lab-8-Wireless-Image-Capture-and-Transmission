@@ -56,14 +56,16 @@ public:
             if (hw_.readCamera(bytes, n) != (int)n) { fail("CAMERA_READ_FAILED"); return; }
             // A start marker can straddle blocks, so output may be n+1 bytes.
             uint8_t output[sizeof(bytes)+2]; size_t used = 0;
+            uint32_t offset = read_; read_ += n;
             for (size_t i = 0; i < n; ++i) {
-                if (read_ < sizeof(first_)) first_[read_] = bytes[i];
+                if (offset+i < sizeof(first_)) first_[offset+i] = bytes[i];
                 memmove(last_, last_+1, sizeof(last_)-1); last_[sizeof(last_)-1] = bytes[i];
-                ++read_;
+            }
+            for (size_t i = 0; i < n; ++i) {
                 JpegStream::Result result = jpeg_.push(bytes[i]);
                 if (result == JpegStream::Invalid) { fail("INVALID_JPEG"); return; }
                 if (result == JpegStream::Start) {
-                    prefix_ = read_-2; output[used++] = 0xff; output[used++] = 0xd8;
+                    prefix_ = offset+i-1; output[used++] = 0xff; output[used++] = 0xd8;
                 } else if (result == JpegStream::Byte || result == JpegStream::End) output[used++] = bytes[i];
             }
             if (used && !hw_.writeSD(output, used)) { fail("SD_WRITE_FAILED"); return; }
