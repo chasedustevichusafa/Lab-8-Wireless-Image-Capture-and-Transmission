@@ -3,7 +3,7 @@ name: Download Lab 8 firmware
 on:
   workflow_dispatch:
   push:
-    branches: ['main', 'feature/remote-files', 'feature/high-baud-link', 'fix/file-transfer-stability', 'feature/remote-upload', 'feature/remote-file-management']
+    branches: ['main', 'feature/remote-files', 'feature/high-baud-link', 'fix/file-transfer-stability', 'feature/remote-upload', 'feature/remote-file-management', 'feature/remote-camera']
     paths:
       - 'Astro-331-2026-Fall/Astro331_Lab8_Code/**'
       - '.github/workflows/lab8-firmware.yml'
@@ -25,11 +25,24 @@ jobs:
           $project = 'Astro-331-2026-Fall/Astro331_Lab8_Code'
           $destination = 'package/KestrelSAT-Lab8'
           New-Item -ItemType Directory -Path $destination -Force | Out-Null
-          foreach ($name in @('platformio.ini', 'README.md', 'include', 'src', 'test')) {
+          foreach ($name in @('platformio.ini', 'README.md', 'include', 'src', 'test', 'lib')) {
             Copy-Item (Join-Path $project $name) $destination -Recurse
           }
           $files = Get-ChildItem $destination -Recurse -File
-          if ($files.Count -ne 6) { throw "Unexpected project file count: $($files.Count)" }
+          foreach ($required in @('platformio.ini', 'README.md', 'src/main.cpp',
+                                  'include/file_service.h', 'include/camera_job.h', 'include/camera_hardware.h',
+                                  'test/host_service.cpp', 'test/host_camera.h', 'test/test_protocol.py',
+                                  'lib/Arducam_Mega-3.0.0/src/Arducam_Mega.h',
+                                  'lib/Arducam_Mega-3.0.0/src/Arducam/ArducamCamera.c',
+                                  'lib/Arducam_Mega-3.0.0/LICENSE')) {
+            if (-not (Test-Path (Join-Path $destination $required) -PathType Leaf)) {
+              throw "Missing required firmware source: $required"
+            }
+          }
+          $expected = foreach ($name in @('platformio.ini', 'README.md', 'include', 'src', 'test', 'lib')) {
+            Get-ChildItem (Join-Path $project $name) -Recurse -File
+          }
+          if ($files.Count -ne $expected.Count) { throw 'Packaging omitted source files' }
           Compress-Archive -Path $destination -DestinationPath validation.zip
           Expand-Archive -Path validation.zip -DestinationPath extracted
           foreach ($file in $files) {

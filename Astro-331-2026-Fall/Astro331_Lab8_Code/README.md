@@ -1,10 +1,16 @@
-# Lab 8: remote SD browser and verified file transfers
+# Lab 8: remote JPEG capture and verified file transfers
 
 Upload this project to use the GCS **Remote Files** tab. Labs 4 and 5 are left
-unchanged. This build supports verified uploads and downloads; it does not yet command
-camera capture or provide live preview.
+unchanged. This build supports single JPEG capture to SD and verified file
+uploads/downloads. Viewing is an on-demand download; no live preview is started.
 
 ## Dated changes
+
+- **2026-10-21 — Remote camera:** Added CAMERA1 capability and capture/status/
+  abort jobs, JPEG-boundary and full SD CRC read-back checks, local-time/resolution
+  naming through the GCS, and last-job recovery. The copied Lab 5 driver remains
+  unchanged; an adapter bounds its waits and shares SPI with SD. Startup marker
+  is `KFS1 camera-1`. Hardware camera validation is pending.
 
 - **2026-10-21 — File management:** Added MANAGE1 capability, file-only DELETE
   and same-folder RENAME, no-overwrite checks and retained results for lost replies.
@@ -50,14 +56,14 @@ camera capture or provide live preview.
 ## Download this project on Windows
 
 In this repository's **Actions** tab, open **Download Lab 8 firmware**, then open
-its latest successful run on `feature/remote-file-management`. Download **KestrelSAT-Lab8-Firmware** under Artifacts.
+its latest successful run on `feature/remote-camera`. Download **KestrelSAT-Lab8-Firmware** under Artifacts.
 Sign into GitHub to download artifacts. Extract the ZIP and open its
 `KestrelSAT-Lab8` folder in PlatformIO; `platformio.ini` is directly inside it.
 This small artifact contains only this project. Its source files are verified by
 compressing/extracting them and comparing their checksums on a Windows runner.
 The workflow runs automatically when this project or its packaging workflow
 changes on `main`, `feature/remote-files`, `feature/high-baud-link`, or
-`fix/file-transfer-stability`, `feature/remote-upload`, or `feature/remote-file-management`, including
+`fix/file-transfer-stability`, `feature/remote-upload`, `feature/remote-file-management`, or `feature/remote-camera`, including
 merges into `main`.
 Manual runs remain available through **Run workflow**.
 
@@ -76,7 +82,8 @@ The configuration deliberately retains the working lab board identifier
 
 Keep the working radio pairing and transparent mode at **9600 baud, 8N1**.
 USB debug output is 115200 baud. Use the same power/ground wiring as the labs.
-The camera stays deselected while the SD card uses the shared SPI bus.
+The camera and SD card use separate chip selects and SPI transactions; camera
+CS is released before each SD operation.
 
 Open **this folder** in PlatformIO, then Build and Upload:
 
@@ -138,7 +145,7 @@ legacy 802.15.4 API indicators (AO=2); keep that setting and use the updated
 ## Stability diagnostics — 2026-10-21
 
 Use the `fix/file-transfer-stability` source artifact and the matching GCS
-stability build. At startup the satellite USB monitor prints `KFS1 manage-1` in the current management build,
+stability build. At startup the satellite USB monitor prints `KFS1 camera-1` in the current camera build,
 reset reason, SD SPI clock and the XBee UART baud. SD reads retry at the exact
 same byte offset up to three times, with a 10 ms pause before retries; partial
 attempts do not advance the protocol offset or checksum. Permanent failures
@@ -238,6 +245,71 @@ backend errors, directory rejection and overwrite protection. Both firmware
 baud-rate builds passed. Test on disposable files first: rename, download/compare,
 delete and Refresh. Management hardware validation remains pending. Full setup:
 [GCS file management](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/feature/remote-file-management/docs/remote-file-management.md).
+
+## Camera capture — 2026-10-21
+
+Extract the **matching camera** GCS executable and this source ZIP from
+`feature/remote-camera`. All required Arducam sources and the MIT license are
+under `lib/Arducam_Mega-3.0.0`; no Lab 5 checkout is needed to build this package.
+Labs 4/5 remain unmodified references. Use PlatformIO **Project Tasks →
+esp32thing_plus_115200 → Upload** for the existing 115200 radios; the default
+`esp32thing_plus` remains 9600. Confirm USB startup marker `KFS1 camera-1` and the
+camera sensor/model/status line. Retain existing radio AP/baud/network settings.
+
+In GCS **Camera → Refresh images**, select a supported resolution (640×480 by
+default when available), then **Capture image**. The satellite creates `/images`
+if needed and saves a JPEG to an exclusive temporary file. Its status advances
+through Capturing, Saving and Verifying. The final `.jpg` appears only after
+complete size/JPEG-boundary checks, SD sync and CRC32 read-back verification.
+Capture success does not download the image automatically. Select **View** to
+perform a checked download and open a static GCS viewer with Fit/zoom/original
+size controls. Download saves to a chosen destination; Rename/Delete operate on
+the satellite image, with overwrite protection and delete confirmation.
+
+Example filename: `/images/20261021T153045-0600_640x480_a14f9082.jpg`. Time is the
+GCS computer's local capture-request time, including UTC offset; it is not a
+satellite shutter/RTC measurement. The job suffix prevents same-second name
+collisions and existing names are rejected. Renaming can change the generated name.
+
+**Stop waiting does not cancel the onboard capture.** Disconnecting or closing
+the GCS also lets the satellite finish saving. The GCS remembers pending intent;
+reconnect and use **Check capture** before another request. Last-job status is
+held in RAM until another job or reset. UNKNOWN after reset requires Refresh and
+inspection of `/images`, not automatic recapture. Files remain on SD. Incomplete
+`.kfs-xxxxxxxx.part` files can be inspected/removed using the existing Remote
+Files partial-cleanup control. A cleanup failure is explicit. Publication is not
+a power-loss transaction; inspect after interruption.
+
+Camera control waits share a 2-second budget, capture completion is polled with a
+15-second limit and a whole capture/save/verify job has a 120-second limit. Data
+moves in 256-byte buffers; no whole-image allocation is used. Camera SPI uses
+1 MHz transactions, while the existing SD clock is preserved. SD read/write
+retries retain the same offset and write retries reuse buffered camera data.
+File operations are blocked while a job is active; camera status/abort remain
+available. Missing cameras do not stop the file service. Check power/wiring and
+reset after fixing an initialization fault. USB prints camera and SD error details.
+
+CAPS becomes `CAPS|UPLOAD1|MANAGE1|CAMERA1|128`; HELLO/file chunks remain compatible.
+`CAMINFO` returns model, supported-resolution mask, camera error and SD state.
+`CAPTURE|job_hex|mode_index|path_hex`, `CAMSTATUS|job_hex`, and `CAMABORT|job_hex`
+return `CAMJOB|job_hex|state|done|total|crc32|path_hex|error`. Capture paths are
+restricted to one `.jpg` file within `/images`. Repeated job IDs retain the same
+outcome rather than taking another photo; changed parameters for that ID are
+rejected. The GCS exposes Stop waiting and Check capture, not automatic CAMABORT.
+
+Image downloads participate in existing speed/RSSI measurements. Multi-operation
+recordings include capture events; onboard capture/save is zero useful file
+throughput until a download begins. All 30 portable protocol tests pass, including
+loss/retry, duplicate jobs, camera/job timeouts, SD failure/corruption, collision
+protection and partial cleanup. Both firmware baud variants compile. These checks
+use a host camera model and do not establish physical camera operation.
+
+On hardware, first capture 320×240 or 640×480, View and check decoded dimensions,
+Download/compare copies, then rename/delete a disposable image. Test higher
+resolutions, repeated captures, Stop waiting/Check capture and reconnect. Recheck
+existing uploads/downloads/statistics. Keep USB output and GCS diagnostics on any
+failure. Full instructions and limits:
+[GCS camera guide](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/feature/remote-camera/docs/camera.md).
 
 ## Hardware test
 

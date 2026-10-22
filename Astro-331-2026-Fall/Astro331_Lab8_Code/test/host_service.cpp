@@ -9,10 +9,26 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "file_service.h"
+#include "host_camera.h"
 
 class HostBackend {
 public:
-    explicit HostBackend(std::filesystem::path root, std::string fault) : root_(root), fault_(fault) {}
+    explicit HostBackend(std::filesystem::path root, std::string fault) : root_(root), fault_(fault), cameraHardware_(root, fault), cameraJob_(cameraHardware_) {}
+    bool cameraBusy() const { return cameraJob_.busy(); }
+    void cameraInfo(char* body, size_t n) {
+        snprintf(body, n, "CAMERA|3MP|%lu|%s|%s", (unsigned long)cameraHardware_.mask(),
+                 cameraHardware_.ready() ? "NONE" : "CAMERA_NOT_FOUND",
+                 fault_ == "camera-sd-absent" ? "SD_UNAVAILABLE" : "SD_READY");
+    }
+    const char* cameraStart(uint32_t id, unsigned mode, const char* path) {
+        return cameraJob_.start(id, mode, path, cameraClock_);
+    }
+    void cameraTick() {
+        cameraClock_ += fault_ == "camera-timeout" ? 8000 : fault_ == "camera-slow-job" ? 30000 : 50;
+        cameraJob_.tick(cameraClock_);
+    }
+    void cameraStatus(uint32_t id, char* body, size_t n) { cameraJob_.status(id, body, n); }
+    void cameraAbort(uint32_t id) { cameraJob_.abort(id); }
     int list(const char* path, uint32_t index, kfs::Entry& entry) {
         try {
             std::vector<std::filesystem::directory_entry> files;
@@ -138,6 +154,9 @@ private:
     std::string fault_;
     std::map<uint32_t, unsigned> attempts_;
     unsigned opens_ = 0;
+    HostCameraHardware cameraHardware_;
+    kcam::Job<HostCameraHardware> cameraJob_;
+    uint32_t cameraClock_ = 0;
 };
 int main(int argc, char** argv) {
     if (argc < 2) return 2;
@@ -148,9 +167,12 @@ int main(int argc, char** argv) {
     while (std::getline(std::cin, line)) {
         // The embedded UART receiver drops an oversized line before handle().
         if (line.size() >= kfs::MAX_LINE) continue;
+        if (!line.empty()) backend.cameraTick();
         const char* response = service.handle(line.c_str());
         if (!response) continue;
         std::string frame(response);
+        if (fault == "camera-drop-start" && line.find("|CAPTURE|") != std::string::npos) continue;
+        if (fault == "camera-drop-status" && frame.find("|CAMJOB|") != std::string::npos) continue;
         if ((fault == "manage-drop-reply" || fault == "manage-drop-all" || fault == "manage-expire-reply") &&
             (frame.find("|DELETED|") != std::string::npos || frame.find("|RENAMED|") != std::string::npos ||
              frame.find("|DELETED\n") != std::string::npos || frame.find("|RENAMED\n") != std::string::npos)) {

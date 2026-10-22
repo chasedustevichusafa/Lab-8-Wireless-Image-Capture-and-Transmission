@@ -3,8 +3,8 @@
 KestrelSAT firmware and course reference material for transferring files and,
 in a future milestone, capturing and previewing images over XBee.
 
-The current working milestone is **remote SD-card browsing and verified file uploads/downloads**
-using the [KestrelSAT GCS Remote Files tab](https://github.com/chasedustevichusafa/KestrelSAT-GCS/tree/feature/remote-file-management).
+The current working milestone is **remote JPEG capture, SD-card browsing and verified file uploads/downloads**
+using the [KestrelSAT GCS Remote Files tab](https://github.com/chasedustevichusafa/KestrelSAT-GCS/tree/feature/remote-camera).
 The project owner confirmed that the GCS and Lab 8 firmware work together on the
 KestrelSAT/XBee hardware on **October 20, 2026**.
 
@@ -19,7 +19,7 @@ KestrelSAT/XBee hardware on **October 20, 2026**.
 ## Download and run
 
 1. Open this repository's **Actions → Download Lab 8 firmware** and select its
-   latest successful run on `feature/remote-file-management`. Sign into GitHub and download **KestrelSAT-Lab8-Firmware**
+   latest successful run on `feature/remote-camera`. Sign into GitHub and download **KestrelSAT-Lab8-Firmware**
    under **Artifacts**. This small package avoids the full repository's legacy
    files and long Windows paths.
 2. Extract the ZIP and open **KestrelSAT-Lab8** in PlatformIO. The folder contains
@@ -31,8 +31,7 @@ KestrelSAT/XBee hardware on **October 20, 2026**.
 
 Keep the working board configuration, wiring, radio pairing, and SD card from the
 labs. The file service supports progress, cancellation, retries, and CRC32
-verification. Uploads use temporary files and preserve existing names; both directions restart after interruption. Camera
-capture and live image preview are future work. See the
+verification. Uploads use temporary files and preserve existing names; both directions restart after interruption. The Camera tab adds single-image capture; live streaming remains future work. See the
 [Lab 8 README](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md) for wiring, protocol,
 limits, build commands, and tests.
 
@@ -45,7 +44,23 @@ The normal firmware environment remains at 9600. See the
 This changes UART speed, not the radio's RF bitrate; verify transfer contents
 and compare measured rates on the hardware.
 
+## Remote camera capture — 2026-10-21
+
+Use matching GCS and firmware downloads from `feature/remote-camera`. Upload
+`esp32thing_plus_115200` for the current radios, keeping existing baud/AP settings.
+The new GCS **Camera** page selects supported resolutions, captures a JPEG to SD,
+and then provides View, Download, Rename and Delete. Filenames use the GCS local
+request time, UTC offset, resolution and a unique suffix. View downloads a saved
+file; no live preview is started. Camera hardware validation is pending.
+
+See [Lab 8 camera setup](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#camera-capture--2026-10-21).
+
 ## Dated changes
+
+- **2026-10-21 — Camera capture:** Integrated the Lab 5 Arducam Mega driver with
+  bounded control waits, cooperative capture/save/read-back, unique local-time
+  filenames and retained job status. Packaging includes the standalone camera
+  library and license. Both baud variants compile; physical camera testing is pending.
 
 - **2026-10-21 — File management:** Added MANAGE1 capability, file-only DELETE
   and same-folder RENAME, no-overwrite checks and retained results for lost replies.

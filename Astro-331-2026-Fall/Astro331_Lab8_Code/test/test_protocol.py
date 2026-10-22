@@ -21,6 +21,7 @@ parser.add_argument('--gcs', type=Path, default=PROJECT.parents[2] / 'KestrelSAT
 args, remaining = parser.parse_known_args()
 sys.path.insert(0, str(args.gcs))
 import serial
+from kestrelsat.camera_files import CameraClient, new_capture
 from kestrelsat.remote_files import Client, Cancelled, RemoteError, UploadUncertain, OperationUncertain, encode, decode
 
 
@@ -64,6 +65,119 @@ class FirmwareProtocolTests(unittest.TestCase):
             process.wait(timeout=2)
         self.addCleanup(stop)
         return Client(port, timeout=0.12, attempts=4)
+
+    def camera(self, fault=''):
+        peer = self.client(fault)
+        return CameraClient(peer.port, timeout=.12, attempts=4)
+
+    def test_camera_capture_save_verify_download_and_duplicate_protection(self):
+        client = self.camera()
+        info = client.camera_info()
+        self.assertTrue(info.ready and info.sd_ready)
+        self.assertIn(5, info.modes)
+        pending = new_capture(5)
+        initial = client.start_capture(pending)
+        self.assertNotEqual(initial['state'], 'SAVED')
+        self.assertFalse((self.sd/pending['path'][1:]).exists())
+        with self.assertRaisesRegex(RemoteError, 'BUSY'):
+            client.request('OPEN', '/binary.bin'.encode().hex())
+        result = client.wait_capture(pending, initial, poll_interval=.001)
+        self.assertEqual(result['state'], 'SAVED')
+        image = self.sd/pending['path'][1:]
+        self.assertEqual(image.stat().st_size, result['total'])
+        self.assertEqual(f'{zlib.crc32(image.read_bytes()):08x}', result['crc'])
+        destination = self.root/'downloaded.jpg'
+        client.download(pending['path'], destination)
+        self.assertEqual(destination.read_bytes(), image.read_bytes())
+        self.assertFalse(list((self.sd/'images').glob('.kfs-*.part')))
+        client.hello()
+        self.assertEqual(client.start_capture(pending)['state'], 'SAVED')
+        image.unlink()
+        # Replaying the original capture must not take a new photo after deletion.
+        self.assertEqual(client.start_capture(pending)['state'], 'SAVED')
+        self.assertFalse(image.exists())
+        changed = dict(pending, path='/images/other.jpg')
+        with self.assertRaisesRegex(RemoteError, 'JOB_MISMATCH'):
+            client.start_capture(changed)
+
+    def test_camera_lost_start_ack_recovers_without_duplicate_capture(self):
+        client = self.camera('camera-drop-start')
+        pending = new_capture(3)
+        initial = client.start_capture(pending)
+        result = client.wait_capture(pending, initial, poll_interval=.001)
+        self.assertEqual(result['state'], 'SAVED')
+        self.assertEqual(len(list((self.sd/'images').glob('*_'+pending['job']+'.jpg'))), 1)
+        client = self.camera('camera-drop-status')
+        pending = new_capture(5)
+        with self.assertRaises(OperationUncertain):
+            client.start_capture(pending)
+        self.assertEqual(len(list((self.sd/'images').glob('*_'+pending['job']+'.jpg'))), 1)
+
+    def test_camera_rejections_preserve_files_and_active_transfers(self):
+        client = self.camera()
+        pending = new_capture(5)
+        opened = client.request('OPEN', '/binary.bin'.encode().hex())
+        with self.assertRaisesRegex(RemoteError, 'BUSY'):
+            client.start_capture(pending)
+        client.request('CLOSE', opened[1])
+        existing = self.sd/pending['path'][1:]
+        existing.write_bytes(b'preserve this file')
+        with self.assertRaisesRegex(RemoteError, 'TARGET_EXISTS'):
+            client.start_capture(pending)
+        self.assertEqual(existing.read_bytes(), b'preserve this file')
+        for path in ('/elsewhere.jpg', '/images/nested/photo.jpg', '/images/.kfs-bad.jpg'):
+            with self.assertRaisesRegex(RemoteError, 'BAD_PATH'):
+                client.request('CAPTURE', pending['job'], 5, path.encode().hex())
+        with self.assertRaisesRegex(RemoteError, 'BAD_RESOLUTION'):
+            client.request('CAPTURE', pending['job'], 13, '/images/test.jpg'.encode().hex())
+        for fault, reason in [('camera-absent', 'CAMERA_UNAVAILABLE'), ('camera-sd-absent', 'SD_UNAVAILABLE')]:
+            with self.subTest(fault=fault), self.assertRaisesRegex(RemoteError, reason):
+                self.camera(fault).start_capture(new_capture(5))
+
+    def test_camera_timeout_sd_failures_and_bad_jpeg_do_not_publish(self):
+        for fault, reason in [('camera-timeout', 'CAMERA_TIMEOUT'), ('camera-full', 'OUT_OF_SPACE'),
+                ('camera-start-fail', 'CAMERA_START_FAILED'), ('camera-read-fail', 'CAMERA_READ_FAILED'),
+                ('camera-write-fail', 'SD_WRITE_FAILED'), ('camera-invalid-jpeg', 'INVALID_JPEG'),
+                ('camera-corrupt-sd', 'VERIFY_CRC_MISMATCH'), ('camera-verify-fail', 'SD_VERIFY_READ_FAILED'),
+                ('camera-publish-fail', 'PUBLISH_FAILED'), ('camera-sync-fail', 'SD_SYNC_FAILED'),
+                ('camera-too-large', 'BAD_IMAGE_SIZE'), ('camera-slow-job', 'JOB_TIMEOUT')]:
+            with self.subTest(fault=fault):
+                client = self.camera(fault)
+                pending = new_capture(5)
+                result = client.wait_capture(pending, client.start_capture(pending), poll_interval=.001)
+                self.assertEqual((result['state'], result['error']), ('ERROR', reason))
+                self.assertFalse((self.sd/pending['path'][1:]).exists())
+                self.assertFalse(list((self.sd/'images').glob('.kfs-*.part')))
+                self.assertTrue(client.list_directory('/'))
+
+    def test_camera_failed_cleanup_preserves_partial_for_explicit_removal(self):
+        client = self.camera('camera-cleanup-fail')
+        pending = new_capture(5)
+        result = client.wait_capture(pending, client.start_capture(pending), poll_interval=.001)
+        self.assertEqual(result['error'], 'INVALID_JPEG_CLEANUP_FAILED')
+        partial = '/images/.kfs-'+pending['job']+'.part'
+        self.assertTrue((self.sd/partial[1:]).exists())
+        client.clean_partial(partial)
+        self.assertFalse((self.sd/partial[1:]).exists())
+
+    def test_camera_abort_and_publication_collision_are_safe(self):
+        client = self.camera()
+        pending = new_capture(5)
+        client.start_capture(pending)
+        reply = client.request('CAMABORT', 'ffffffff', expected={'CAMJOB'})
+        self.assertEqual(reply[2], 'UNKNOWN')
+        reply = client.request('CAMABORT', pending['job'], expected={'CAMJOB'})
+        self.assertEqual(reply[2], 'CANCELLED')
+        self.assertFalse(list((self.sd/'images').glob('.kfs-*.part')))
+        self.assertEqual(client.start_capture(pending)['state'], 'CANCELLED')
+        pending = new_capture(5)
+        initial = client.start_capture(pending)
+        target = self.sd/pending['path'][1:]
+        target.write_bytes(b'created while camera was running')
+        result = client.wait_capture(pending, initial, poll_interval=.001)
+        self.assertEqual(result['error'], 'PUBLISH_FAILED')
+        self.assertEqual(target.read_bytes(), b'created while camera was running')
+        self.assertEqual(client.capture_status('12345678', '/images/no-such-job.jpg')['state'], 'UNKNOWN')
 
     def test_rename_delete_files_and_preserve_existing_targets(self):
         client = self.client()
