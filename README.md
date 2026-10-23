@@ -19,8 +19,8 @@ KestrelSAT/XBee hardware on **October 20, 2026**.
 ## Download and run
 
 1. Open this repository's **Actions → Download Lab 8 firmware** and select its
-   latest successful run on `main` after merge, or `feature/remote-camera` while
-   testing the PR. Sign into GitHub and download **KestrelSAT-Lab8-Firmware**
+   latest successful run on `main`, or `feature/cs27-baud-benchmark` for the new
+   9600/GPIO27 environment before merge. Sign into GitHub and download **KestrelSAT-Lab8-Firmware**
    under **Artifacts**. This small package avoids the full repository's legacy
    files and long Windows paths.
 2. Extract the ZIP and open **KestrelSAT-Lab8** in PlatformIO. The folder contains
@@ -40,6 +40,13 @@ verification. Uploads use temporary files and preserve existing names; both dire
 limits, build commands, and tests.
 
 ## Optional faster UART link — 2026-10-21
+
+**2026-10-22 GPIO27 benchmark:** The firmware source package on
+`feature/cs27-baud-benchmark` (and `main` once merged) now includes
+`benchmark_9600_cs27` for **9600 baud with camera CS on GPIO27**. Use
+`esp32thing_plus_115200_camera_cs27` for the matching 115200 comparison. Set both
+radio UARTs and the GCS to the selected rate; USB monitoring remains 115200.
+See [the build/upload and graph-recording procedure](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#gpio27-baud-comparison--2026-10-22).
 
 For the 115200-baud test, select the `esp32thing_plus_115200` firmware environment,
 configure both radios' UART baud settings in XCTU, and select 115200 in the GCS.

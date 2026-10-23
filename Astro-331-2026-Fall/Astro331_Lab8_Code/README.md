@@ -6,6 +6,12 @@ uploads/downloads. Viewing is an on-demand download; no live preview is started.
 
 ## Dated changes
 
+- **2026-10-22 — GPIO27 slow-baud benchmark:** Added `benchmark_9600_cs27`
+  for comparing 9600 with the confirmed 115200 setup while retaining camera
+  CS=GPIO27, the existing board and SD clock. Source artifacts include this
+  environment. Both radio UARTs and the GCS must match the selected baud rate;
+  the USB monitor remains at 115200.
+
 - **2026-10-22 — Hardware confirmed:** The owner confirmed camera capture and
   GPIO27 operation and reported no remaining issues at the working stopping
   point. Same-image unicast downloads took 22.407 s with RSSI off and 22.411 s
@@ -72,18 +78,55 @@ uploads/downloads. Viewing is an on-demand download; no live preview is started.
 ## Download this project on Windows
 
 In this repository's **Actions** tab, open **Download Lab 8 firmware**, then open
-its latest successful run on `main` after merge, or `feature/remote-camera` while
-testing the PR. Download **KestrelSAT-Lab8-Firmware** under Artifacts.
+its latest successful run on `main`, or `feature/cs27-baud-benchmark` for the new
+9600/GPIO27 environment before it is merged. Download **KestrelSAT-Lab8-Firmware** under Artifacts.
 Sign into GitHub to download artifacts. Extract the ZIP and open its
 `KestrelSAT-Lab8` folder in PlatformIO; `platformio.ini` is directly inside it.
 This small artifact contains only this project. Its source files are verified by
 compressing/extracting them and comparing their checksums on a Windows runner.
 The workflow runs automatically when this project or its packaging workflow
 changes on `main`, `feature/remote-files`, `feature/high-baud-link`, or
-`fix/file-transfer-stability`, `feature/remote-upload`, `feature/remote-file-management`, or `feature/remote-camera`, including
+`fix/file-transfer-stability`, `feature/remote-upload`, `feature/remote-file-management`,
+`feature/remote-camera`, or `feature/cs27-baud-benchmark`, including
 merges into `main`.
 Manual runs remain available through **Run workflow**.
 Pull requests affecting this project or its workflow also validate packaging.
+
+## GPIO27 baud comparison — 2026-10-22
+
+The source ZIP on `feature/cs27-baud-benchmark` (and `main` once merged) includes
+both environments below. Use the current GCS executable and the same physical
+GPIO27 camera wiring for each test; no GCS update is required.
+
+| Test | PlatformIO environment | Satellite XBee UART / ground XBee UART / GCS baud | Camera CS |
+| --- | --- | --- | --- |
+| Slow baseline | `benchmark_9600_cs27` | 9600 | GPIO27 |
+| Confirmed faster setup | `esp32thing_plus_115200_camera_cs27` | 115200 | GPIO27 |
+
+Stop transfers and disconnect the GCS. In XCTU configure both radios' UART baud
+for the selected row, write the settings and close XCTU. Upload the matching
+firmware environment and connect the GCS at that baud. Keep satellite AP=0,
+ground AP=1/GCS API, and the chosen broadcast/unicast and RSSI test settings.
+USB Serial Monitor remains **115200** for both builds; changing its speed does
+not change the XBee UART. Keep all power off when changing wiring; no wiring
+change is needed between these environments.
+
+```sh
+pio run -e benchmark_9600_cs27
+pio run -e benchmark_9600_cs27 -t upload
+```
+
+Use the same saved JPEG, radio placement and power for comparisons. In Transfer
+Stats start a named recording per configuration, download three times with short
+idle gaps, stop recording and export rate/RSSI PNGs plus measurement and summary
+CSVs. Retain failed runs and diagnostic JSONLs. A low rate or a clean run is a
+measurement; no artificial packet loss is introduced. Restore both radio UARTs,
+GCS baud and firmware to the confirmed GPIO27/115200 setup after the slow tests.
+
+The original `esp32thing_plus` default still uses GPIO12/9600 and is not the
+GPIO27 benchmark environment. Camera/file-service code and the 25 MHz SD clock
+are shared across these builds; only the radio UART baud differs between the
+two GPIO27 configurations. Physical 9600/GPIO27 testing is required after upload.
 
 ## Confirmed camera and radio setup — 2026-10-22
 
