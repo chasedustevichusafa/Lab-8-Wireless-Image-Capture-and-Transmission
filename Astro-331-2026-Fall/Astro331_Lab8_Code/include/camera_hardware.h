@@ -4,9 +4,20 @@
 #include <Arducam_Mega.h>
 #include "camera_job.h"
 
+// Hardware boundary for camera_job.h. Calls run on the Arduino loop thread;
+// there is no concurrent task touching SPI. Camera and SD share SCK/MISO/MOSI
+// but have separate chip selects and transaction speeds. A camera transaction
+// must finish with its CS released before any SdFat operation starts.
+//
+// The vendor library is copied unchanged from Lab 5. Its operation table is
+// copied into operations_ so this instance can replace indefinite waits without
+// modifying a shared global vendor table or the course reference project.
 class CameraHardware {
 public:
     void begin() {
+        // Probe the sensor before calling the vendor initializer. An absent
+        // camera often reads 00/FF; passing it to the original indefinite idle
+        // loop could otherwise stop the entire radio/file-service application.
         instance_ = this;
         ready_ = false; lastInit_ = millis(); attempted_ = true;
         digitalWrite(CAMERA_CS, HIGH);
@@ -26,6 +37,10 @@ public:
             Serial.printf("[CAMERA] sensor=0x%02x status=%s; check Lab 5 wiring/power\n", id, fault_);
             return;
         }
+        // The constructor configures SPI/CS and returns a camera structure.
+        // Immediately park CS high, then install our bounded control waits and
+        // nonblocking capture start. Four seconds is one initialization budget,
+        // shared across its register waits rather than renewed on every poll.
         camera_ = createArducamCamera(CAMERA_CS);
         digitalWrite(CAMERA_CS, HIGH); // Vendor constructor leaves CS asserted.
         operations_ = *camera_.arducamCameraOp;
@@ -41,6 +56,9 @@ public:
                       model(), (unsigned long)mask(), fault_);
     }
     void retry() {
+        // Called by CAMINFO only when no file/camera operation owns resources.
+        // Refresh can therefore recover late camera power without rebooting the
+        // satellite; a healthy camera is not reset by ordinary gallery refresh.
         if (!ready_ && (!attempted_ || (uint32_t)(millis()-lastInit_) >= 3000)) begin();
     }
     bool ready() const { return ready_; }
@@ -48,6 +66,9 @@ public:
     const char* fault() const { return fault_; }
     uint32_t mask() const { return ready_ ? (uint32_t)camera_.myCameraInfo.supportResolution : 0; }
     bool start(unsigned mode) {
+        // takePicture sets resolution/format via sensor registers. startOnly
+        // starts the exposure but deliberately does not wait for completion;
+        // camera_job.h later calls poll() between normal UART service passes.
         Serial.printf("[CAMERA] capture mode=%u\n", mode);
         deadline_ = millis()+2000; timedOut_ = false;
         cameraTransaction();
@@ -57,6 +78,9 @@ public:
         return !timedOut_;
     }
     int poll(uint32_t& size) {
+        // Register 0x44 contains sensor state and capture-done bit 0x04. Return
+        // -1 for a disconnected-looking bus, 0 while waiting, and 1 with the
+        // FIFO length when complete. A real timeout is enforced by the job.
         cameraTransaction();
         uint8_t state = camera_.arducamCameraOp->readReg(&camera_, 0x44);
         if (state == 0xff) {
@@ -88,6 +112,9 @@ public:
         }
     }
     const char* reserve(const char* path, const char* temporary) {
+        // O_EXCL is essential: never reuse another job's leftover temporary.
+        // Reserve before exposure so destination/card problems are rejected
+        // before taking an image that could not be safely stored.
         if (!sdReady) return "SD_UNAVAILABLE";
         if (!sd.exists("/images") && !sd.mkdir("/images")) return "DIRECTORY_UNAVAILABLE";
         if (sd.exists(path)) return "TARGET_EXISTS";
@@ -104,6 +131,9 @@ public:
         return clusters >= 0 && (uint64_t)clusters*sd.vol()->bytesPerCluster() >= size;
     }
     bool writeSD(const uint8_t* bytes, size_t n) {
+        // Record the original file offset once. After a short/failed write,
+        // reopen this job's own temporary and overwrite that same range using
+        // the still-buffered camera data. The caller advances only on success.
         uint32_t offset = file_.curPosition();
         for (unsigned attempt = 1; attempt <= kfs::READ_ATTEMPTS; ++attempt) {
             if (attempt > 1) {
@@ -119,6 +149,9 @@ public:
         return false;
     }
     bool prepareVerify(uint32_t size) {
+        // Flush pending writes, close the writer, then open a reader and check
+        // the expected extracted-JPEG length. Verification must read stored
+        // bytes rather than simply reuse the camera's transient output buffer.
         bool synced = file_.sync() && file_.size() == size;
         bool closed = file_.close();
         if (!synced || !closed) return false;
@@ -138,6 +171,9 @@ public:
         return -1;
     }
     bool commit() {
+        // The job invokes this only after read-back CRC agreement. A final
+        // no-existing-target check precedes rename. This protects ordinary
+        // names; it does not make a FAT rename atomic against power loss.
         if (!file_.close() || sd.exists(path_) || !sd.rename(temporary_, path_)) return false;
         Serial.printf("[CAMERA] saved=%s\n", path_);
         temporary_[0] = 0;
@@ -153,10 +189,16 @@ public:
     }
 private:
     void cameraTransaction() {
+        // SdFat manages its own transactions. Here we explicitly deselect SD
+        // before switching SPI to the camera's conservative 1 MHz/mode 0.
+        // Camera read/register functions themselves toggle CAMERA_CS.
         digitalWrite(SD_CS, HIGH);
         SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
     }
     static void boundedIdle(ArducamCamera* camera) {
+        // C vendor callbacks do not carry a C++ this pointer. instance_ refers
+        // to the one firmware adapter. On deadline expiry mark the operation
+        // failed and return, allowing the main file/radio loop to recover.
         while ((camera->arducamCameraOp->readReg(camera, 0x44) & 3) != 2) {
             if ((int32_t)(millis()-instance_->deadline_) >= 0) { instance_->timedOut_ = true; return; }
             delay(1);
