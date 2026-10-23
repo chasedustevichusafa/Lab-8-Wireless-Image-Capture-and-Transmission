@@ -6,6 +6,35 @@ uploads/downloads. Viewing is an on-demand download; no live preview is started.
 
 ## Dated changes
 
+- **2026-10-23 — Code walkthrough:** Added detailed comments to the application
+  sources and environment definitions, explaining KFS framing/replay, SD retries,
+  upload publication, camera states, JPEG framing, SPI ownership and deadlines.
+  Executable code and build settings are unchanged; no speed experiment is
+  implemented. The source-artifact workflow builds this branch and retains main.
+
+## Source reading order
+
+1. `src/main.cpp`: board/UART/SPI setup, bounded command collection, SdFat backend,
+   USB diagnostics and the cooperative main loop. USB and radio are separate
+   channels; radio configuration is still done in XCTU.
+2. `include/file_service.h`: KFS1 framing/CRC, field validation, request replay,
+   one active transfer, upload/download states and retained mutation results.
+   Radio retries and local SD attempts are different layers. File chunks remain
+   128 bytes with hex encoding and one request/reply at a time.
+3. `include/camera_job.h`: capture, bounded FIFO extraction, SD read-back and
+   publication. Job identity avoids duplicate exposures after uncertain replies.
+4. `include/jpeg_stream.h`: marker/segment parsing across FIFO blocks, including
+   padding and embedded thumbnails. It recognizes framing rather than decoding
+   image pixels; the GCS viewer performs decoding after download.
+5. `include/camera_hardware.h`: bounded vendor callbacks, SPI transactions and
+   temporary-file ownership. The copied Lab 5 vendor library remains unchanged.
+6. `platformio.ini`: the existing baud/CS environments. Selecting an environment
+   does not program either radio's AP, BD or destination settings.
+7. `test/test_protocol.py`: host fault injection and GCS interoperability checks.
+   Compilation and simulation do not establish hardware reliability.
+
+## Earlier dated changes
+
 - **2026-10-22 — GPIO27 slow-baud benchmark:** Added `benchmark_9600_cs27`
   for comparing 9600 with the confirmed 115200 setup while retaining camera
   CS=GPIO27, the existing board and SD clock. Source artifacts include this

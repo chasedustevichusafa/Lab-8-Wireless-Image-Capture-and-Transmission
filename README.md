@@ -10,6 +10,13 @@ KestrelSAT/XBee hardware on **October 20, 2026**.
 
 ## Projects
 
+**2026-10-23 — Source documentation:** The Lab 8 application now has detailed
+comments covering the protocol, SD backend, camera state machine and hardware
+boundaries. See its [source reading order](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#source-reading-order).
+Executable code and environment settings are unchanged; transfer-speed
+experiments are not included. The packaging workflow also builds this
+documentation branch while retaining automatic main artifacts.
+
 | Project | Purpose |
 | --- | --- |
 | [Lab 8 firmware](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md) | Current SD browser and verified upload/download service; upload this project for the GCS Remote Files tab. |

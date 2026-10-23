@@ -8,11 +8,35 @@
 #include <string.h>
 
 namespace kfs {
+// READING GUIDE: this header is the satellite half of remote_files.py in the
+// GCS. It knows the wire format and session rules, but not Arduino, SPI or SD.
+// Backend is a template parameter so the same command handler can operate on
+// real SdFat files (main.cpp) or ordinary host files (test/host_service.cpp).
+// A passing host test therefore exercises this parser/state machine itself.
+// It cannot establish the electrical reliability of a radio or SD card.
+//
+// A request/response is ASCII:
+//   @KFS1|eight_hex_request_id|operation|arguments...|eight_hex_crc32\n
+// CRC covers all characters before the final checksum separator. Newline is
+// the record delimiter; carriage returns are removed by the UART receiver.
+// File bytes and UTF-8 paths are hex encoded so embedded newlines, delimiters
+// and NUL bytes cannot change the structure of a command. This costs two wire
+// characters per payload byte; it is relevant when measuring useful throughput.
+//
+// These are independent limits. CHUNK is useful file bytes per READ/WRITE;
+// MAX_LINE includes encoded data, fields, CRC and delimiters. Increasing CHUNK
+// alone is not a compatible speed optimization: Python validation, HELLO/CAPS,
+// local buffers and the line receiver must all agree on the resulting format.
 static const size_t MAX_LINE = 1024;
 static const size_t MAX_PATH = 192;
 static const size_t CHUNK = 128;
 static const uint8_t READ_ATTEMPTS = 3;
 
+// Incremental reflected CRC-32 using polynomial 0xEDB88320. The caller begins
+// with all bits set and XORs all bits at completion. Keeping the intermediate
+// state allows a whole file to be checked without buffering it in RAM. Python's
+// zlib.crc32 performs the equivalent chaining using its public initial value 0.
+// A CRC detects accidental corruption; it does not authenticate the sender.
 inline uint32_t crcUpdate(uint32_t crc, const uint8_t* bytes, size_t length) {
     while (length--) {
         crc ^= *bytes++;
@@ -35,6 +59,9 @@ inline void hexEncode(const uint8_t* src, size_t n, char* dest) {
     }
     dest[2*n] = 0;
 }
+// Parse a complete unsigned field, rejecting signs, suffixes and overflow.
+// Accumulation is wider than the output so an overflowing value cannot wrap
+// into a valid-looking offset, size or job identifier.
 inline bool number(const char* text, uint32_t& out, int base = 10) {
     if (!*text || strlen(text) > (base == 16 ? 8U : 10U)) return false;
     uint64_t value = 0;
@@ -47,6 +74,10 @@ inline bool number(const char* text, uint32_t& out, int base = 10) {
     out = (uint32_t)value;
     return true;
 }
+// Decode only after checking destination capacity. The result must be an
+// absolute, canonical SD path. No relative traversal, backslashes, empty
+// components or control bytes reach the filesystem backend. The path is data;
+// it is never a shell command or a path on the ground-station computer.
 inline bool decodePath(const char* hex, char* path) {
     size_t n = strlen(hex);
     if (!n || n % 2 || n / 2 > MAX_PATH) return false;
@@ -72,6 +103,10 @@ inline bool decodePath(const char* hex, char* path) {
     }
     return true;
 }
+// Reserved temporary names are deliberately recognizable. CLEAN may remove
+// these incomplete files; ordinary upload/rename/delete paths may not claim
+// the reserved prefix. This separates recovery of partial operations from
+// deletion of a completed user file.
 inline bool partialPath(const char* path) {
     const char* name = strrchr(path, '/');
     name = name ? name+1 : path;
@@ -112,6 +147,10 @@ template<class Backend> class Service {
 public:
     explicit Service(Backend& backend) : backend_(backend) {}
     bool active() const { return active_; }
+    // Inactivity releases the current file and attempts to remove an unfinished
+    // upload. Retained camera jobs live elsewhere, and last mutation/completed
+    // upload results are separate from this active-session lifetime. Expiry is
+    // driven by the Arduino loop, not by a timer thread inside this class.
     void expire() {
         if (active_ && uploading_) backend_.abortUpload();
         else backend_.close();
@@ -121,6 +160,9 @@ public:
     // Ignore non-protocol text or damaged requests. No unchecked command is run.
     // Returned frame includes newline. The caller writes it as one response.
     const char* handle(const char* line) {
+        // Validate the complete frame before doing anything with a path or
+        // modifying session state. Damaged/non-KFS text gets no response; the
+        // GCS can retry a missing reply with the SAME request identifier.
         size_t length = strlen(line);
         if (length >= MAX_LINE || strncmp(line, "@KFS1|", 6)) return nullptr;
         const char* last = strrchr(line, '|');
@@ -128,8 +170,16 @@ public:
         if (!last || strlen(last + 1) != 8 || !number(last + 1, supplied, 16) ||
             (crcUpdate(0xFFFFFFFFUL, (const uint8_t*)line, last-line) ^ 0xFFFFFFFFUL) != supplied)
             return nullptr;
+        // Replaying an identical request replays its response, not its side
+        // effects. This matters when a write/delete succeeded but its radio
+        // reply was lost. Mutation replay has its own retained slot so later
+        // metadata queries do not immediately erase the destructive result.
+        // This is bounded last-result retention in RAM, not a history of every
+        // command and not persistence across a satellite reset.
         if (mutationRequest_[0] && !strcmp(line, mutationRequest_)) return mutationResponse_;
         if (cachedRequest_[0] && !strcmp(line, cachedRequest_)) return response_;
+        // Split a private copy: cachedRequest_ must retain the exact wire bytes
+        // for replay detection. The field-count limit also bounds parser work.
         char work[MAX_LINE];
         memcpy(work, line, last-line);
         work[last-line] = 0;
@@ -149,6 +199,10 @@ public:
         id_ = id;
         const char* op = fields[2];
         char path[MAX_PATH + 1];
+        // HELLO establishes the base transfer contract. CAPS advertises optional
+        // features without changing version 1's 128-byte file chunks. Camera
+        // info/status/abort/diagnostics are handled before the camera-busy gate
+        // so an operator can observe or stop an active job.
         if (!strcmp(op, "HELLO") && count == 3) return reply("HELLO|1|128");
         if (!strcmp(op, "CAPS") && count == 3) return reply("CAPS|UPLOAD1|MANAGE1|CAMERA1|CAMDIAG1|128");
         if (!strcmp(op, "CAMINFO") && count == 3) {
@@ -183,6 +237,10 @@ public:
             snprintf(body, sizeof(body), "RESULT|%s|%s", mutationOp_, mutationBody_);
             return reply(body);
         }
+        // Mutations require no active file session. Path checks happen here;
+        // the backend additionally rejects directories, existing destinations
+        // and SD errors. RESULT lets the client query the prior outcome after
+        // an uncertain reply rather than blindly repeating a destructive action.
         if ((!strcmp(op, "DELETE") && count == 4) || (!strcmp(op, "RENAME") && count == 5)) {
             const char* error = nullptr;
             char target[MAX_PATH+1];
@@ -205,6 +263,12 @@ public:
             if (!decodePath(fields[3], path) || !partialPath(path)) return reply("ERR|BAD_PATH");
             return reply(backend_.cleanPartial(path) ? "REMOVED" : "ERR|CLEAN_FAILED");
         }
+        // Upload lifecycle: PUT -> WRITE... -> VERIFY... -> COMMIT.
+        // The final user-visible filename is not created by PUT. The backend
+        // exclusively reserves a neighboring .part file, preventing accidental
+        // reuse of a leftover temporary or overwrite of an existing image.
+        // The opening request ID doubles as the session token, so the GCS can
+        // attempt ABORT even when the READY reply was never received.
         if (!strcmp(op, "PUT") && count == 6) {
             if (active_) return reply("ERR|BUSY");
             uint32_t size, crc;
@@ -259,6 +323,10 @@ public:
                     !memcmp(lastWrite_, bytes, n)) return position("ACK", next_);
                 if (verifying_ || offset != next_ || next_ >= size_ ||
                     n != (size_-next_ < CHUNK ? size_-next_ : CHUNK)) return reply("ERR|BAD_OFFSET");
+                // An SD attempt is different from a GCS/radio retry. Repeat the
+                // same offset and buffered bytes locally; advance CRC/next_
+                // only after one complete write. Partial writes must not cause
+                // duplicate bytes to enter the logical file checksum.
                 int got = -1;
                 for (uint8_t attempt = 1; attempt <= READ_ATTEMPTS; ++attempt) {
                     got = backend_.writeAt(next_, bytes, n, attempt);
@@ -269,6 +337,11 @@ public:
                 crc_ = crcUpdate(crc_, bytes, n); next_ += n;
                 return position("ACK", next_);
             }
+            // Receiving all bytes is insufficient for success: independently
+            // reread the temporary SD file and compare its CRC with the source.
+            // VERIFY is batched so progress, retries and cancellation stay
+            // responsive. lastVerify_ makes a repeated verification request
+            // replay its progress without hashing that range a second time.
             if (!strcmp(op, "VERIFY")) {
                 uint32_t offset;
                 if (!number(fields[4], offset)) return reply("ERR|BAD_OFFSET");
@@ -297,6 +370,10 @@ public:
                 }
                 return position("CHECKED", verifyNext_);
             }
+            // COMMIT publishes only a completely reread, matching file. Retain
+            // its size/CRC after closing the active session so a lost STORED
+            // response can be recovered by STATUS/COMMIT/ABORT with that token.
+            // Filesystem rename is not a transaction against loss of power.
             if (!verifying_ || verifyNext_ != size_) return reply("ERR|INCOMPLETE");
             if ((verifyCrc_ ^ 0xffffffffUL) != expectedCrc_)
                 return uploadFailure("VERIFY_CRC_MISMATCH", verifyNext_, 0, -1);
@@ -321,6 +398,10 @@ public:
                      entry.directory ? 'D' : 'F', (unsigned long)entry.size, name);
             return reply(body);
         }
+        // Download lifecycle: OPEN -> READ(offset=0)... -> END; CLOSE abandons
+        // an incomplete transfer. Only one file session is active. Opening a
+        // new download replaces an older download but may not displace an
+        // upload's exclusive temporary file.
         if (!strcmp(op, "OPEN") && count == 4) {
             if (active_ && uploading_) return reply("ERR|BUSY");
             if (!decodePath(fields[3], path)) return reply("ERR|BAD_PATH");
@@ -350,6 +431,10 @@ public:
             uint32_t offset;
             if (!number(fields[4], offset) || offset != next_ || next_ >= size_)
                 return reply("ERR|BAD_OFFSET");
+            // READ is sequential stop-and-wait: next_ is the only acceptable
+            // new offset. Radio duplicates were caught by the frame replay
+            // cache above. This prevents skipped bytes and double CRC updates,
+            // but each chunk waits for a round trip before the next is sent.
             uint8_t bytes[CHUNK];
             size_t n = (size_ - next_ < CHUNK) ? size_ - next_ : CHUNK;
             int got = -1;
@@ -397,6 +482,10 @@ private:
         snprintf(response_ + n, sizeof(response_)-n, "|%08lx\n", (unsigned long)crc);
         return response_;
     }
+    // Memory ownership map: command replay, transfer progress and upload replay
+    // are separate mechanisms. The response pointer returned by handle() refers
+    // to storage owned by this Service and must be consumed before the next
+    // command overwrites it. No buffer holds a complete image or arbitrary file.
     char mutationRequest_[MAX_LINE] = {}, mutationResponse_[128] = {};
     char mutationBody_[64] = {}, mutationOp_[8] = {};
     uint32_t mutationId_ = 0;

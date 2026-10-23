@@ -7,7 +7,7 @@ on:
       - 'Astro-331-2026-Fall/Astro331_Lab8_Code/**'
       - '.github/workflows/lab8-firmware.yml'
   push:
-    branches: ['main', 'feature/remote-files', 'feature/high-baud-link', 'fix/file-transfer-stability', 'feature/remote-upload', 'feature/remote-file-management', 'feature/remote-camera', 'feature/cs27-baud-benchmark']
+    branches: ['main', 'feature/remote-files', 'feature/high-baud-link', 'fix/file-transfer-stability', 'feature/remote-upload', 'feature/remote-file-management', 'feature/remote-camera', 'feature/cs27-baud-benchmark', 'docs/code-walkthrough']
     paths:
       - 'Astro-331-2026-Fall/Astro331_Lab8_Code/**'
       - '.github/workflows/lab8-firmware.yml'
