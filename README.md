@@ -1,10 +1,10 @@
 # Lab 8: Wireless Image Capture and Transmission
 
-KestrelSAT firmware and course reference material for transferring files and,
-in a future milestone, capturing and previewing images over XBee.
+KestrelSAT firmware and course reference material for capturing still images
+and transferring files over XBee. Live image preview remains future work.
 
 The current working milestone is **remote JPEG capture, SD-card browsing and verified file uploads/downloads**
-using the [KestrelSAT GCS Remote Files tab](https://github.com/chasedustevichusafa/KestrelSAT-GCS/tree/feature/remote-camera).
+using the KestrelSAT GCS Camera and Remote Files tabs.
 The project owner confirmed that the GCS and Lab 8 firmware work together on the
 KestrelSAT/XBee hardware on **October 20, 2026**.
 
@@ -19,13 +19,17 @@ KestrelSAT/XBee hardware on **October 20, 2026**.
 ## Download and run
 
 1. Open this repository's **Actions → Download Lab 8 firmware** and select its
-   latest successful run on `feature/remote-camera`. Sign into GitHub and download **KestrelSAT-Lab8-Firmware**
+   latest successful run on `main` after merge, or `feature/remote-camera` while
+   testing the PR. Sign into GitHub and download **KestrelSAT-Lab8-Firmware**
    under **Artifacts**. This small package avoids the full repository's legacy
    files and long Windows paths.
 2. Extract the ZIP and open **KestrelSAT-Lab8** in PlatformIO. The folder contains
-   `platformio.ini`. Build and upload the `esp32thing_plus` environment.
+   `platformio.ini`. For the confirmed camera setup with camera CS on GPIO27,
+   build/upload `esp32thing_plus_115200_camera_cs27`. Original lab defaults remain
+   available as `esp32thing_plus` (GPIO12/9600); match firmware to physical wiring.
 3. Run the updated GCS executable, connect to the ground XBee COM port at
-   **9600 baud, 8N1**, then choose **Remote Files → Refresh / Open**.
+   **115200 baud, 8N1**, ground AP=1/GCS API mode and satellite AP=0, then choose
+   **Camera → Refresh images** or **Remote Files → Refresh / Open**.
 4. Browse folders, select a file, choose **Download...**, and wait for
    **Verified and saved**.
 
@@ -46,22 +50,37 @@ and compare measured rates on the hardware.
 
 ## Remote camera capture — 2026-10-21
 
+**2026-10-22 hardware confirmation:** The owner confirmed camera capture and
+GPIO27 operation and reported a working stopping point. Use
+`esp32thing_plus_115200_camera_cs27` and unicast destinations on both radios,
+with RSSI polling enabled if desired. Two same-image unicast downloads completed
+in 22.407 s and 22.411 s, polling off/on respectively, with zero protocol
+timeouts/retries. See the [confirmed configuration and measured limits](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#confirmed-camera-and-radio-setup--2026-10-22).
+
 **2026-10-22 follow-up:** Camera-2 corrects FIFO/JPEG framing and uses the vendor
 SD-example read method, retries failed detection through Refresh, and adds byte
 count/boundary diagnostics. An optional GPIO27 CS environment supports testing
 the GPIO12 boot-strap explanation for camera-connected flash MD5 errors. See
 [the upload/wiring and capture-retest procedure](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#camera-uploaddetection-failures--2026-10-22).
 
-Use matching GCS and firmware downloads from `feature/remote-camera`. Upload
-`esp32thing_plus_115200` for the current radios, keeping existing baud/AP settings.
+Use matching GCS and firmware downloads from `main` after merge, or
+`feature/remote-camera` while testing. Upload `esp32thing_plus_115200_camera_cs27`
+for the confirmed GPIO27 setup, keeping the working baud/AP/unicast settings.
 The new GCS **Camera** page selects supported resolutions, captures a JPEG to SD,
 and then provides View, Download, Rename and Delete. Filenames use the GCS local
 request time, UTC offset, resolution and a unique suffix. View downloads a saved
-file; no live preview is started. Camera hardware validation is pending.
+file; no live preview is started. Camera operation has been confirmed by the owner;
+the measured transfer pair is not a long-duration reliability study.
 
 See [Lab 8 camera setup](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#camera-capture--2026-10-21).
 
 ## Dated changes
+
+- **2026-10-22 — Hardware result and handoff:** Recorded confirmed camera/GPIO27
+  operation, unicast setup and same-image RSSI off/on results. Documented the
+  working 115200/API setup and retained the original lab environments. The source
+  artifact workflow now checks pull requests as well as pushes to main/feature
+  branches and validates all packaged source checksums.
 
 - **2026-10-21 — Camera capture:** Integrated the Lab 5 Arducam Mega driver with
   bounded control waits, cooperative capture/save/read-back, unique local-time

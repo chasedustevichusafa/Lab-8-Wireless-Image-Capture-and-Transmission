@@ -6,6 +6,13 @@ uploads/downloads. Viewing is an on-demand download; no live preview is started.
 
 ## Dated changes
 
+- **2026-10-22 — Hardware confirmed:** The owner confirmed camera capture and
+  GPIO27 operation and reported no remaining issues at the working stopping
+  point. Same-image unicast downloads took 22.407 s with RSSI off and 22.411 s
+  with it on, with zero protocol timeouts/retries. The confirmed setup and limits
+  are recorded below. Pull requests now run source artifact packaging checks;
+  automatic main builds are preserved.
+
 - **2026-10-22 — Camera capture recovery:** Followed the vendor capture2SD
   read/framing approach instead of requiring FIFO bytes to equal JPEG boundaries.
   The streaming framer handles padding, split markers and embedded thumbnail
@@ -65,7 +72,8 @@ uploads/downloads. Viewing is an on-demand download; no live preview is started.
 ## Download this project on Windows
 
 In this repository's **Actions** tab, open **Download Lab 8 firmware**, then open
-its latest successful run on `feature/remote-camera`. Download **KestrelSAT-Lab8-Firmware** under Artifacts.
+its latest successful run on `main` after merge, or `feature/remote-camera` while
+testing the PR. Download **KestrelSAT-Lab8-Firmware** under Artifacts.
 Sign into GitHub to download artifacts. Extract the ZIP and open its
 `KestrelSAT-Lab8` folder in PlatformIO; `platformio.ini` is directly inside it.
 This small artifact contains only this project. Its source files are verified by
@@ -75,6 +83,50 @@ changes on `main`, `feature/remote-files`, `feature/high-baud-link`, or
 `fix/file-transfer-stability`, `feature/remote-upload`, `feature/remote-file-management`, or `feature/remote-camera`, including
 merges into `main`.
 Manual runs remain available through **Run workflow**.
+Pull requests affecting this project or its workflow also validate packaging.
+
+## Confirmed camera and radio setup — 2026-10-22
+
+The owner confirmed camera-2 captures work, GPIO27 works well, and the system
+reached a working stopping point. Use camera **CS=GPIO27** with
+**`esp32thing_plus_115200_camera_cs27`**, both UARTs at **115200**, satellite
+**AP=0**, ground **AP=1** with GCS API mode, and **unicast** addressing on both
+radios. RSSI polling can remain enabled. The SD clock remains at the configured
+25 MHz; no lower-clock firmware change was made during this handoff.
+
+In XCTU, save the working profiles, read each radio's SH/SL and configure:
+
+| Radio | DH | DL |
+| --- | --- | --- |
+| Ground | Satellite SH | Satellite SL |
+| Satellite | Ground SH | Ground SL |
+
+Copy the peer's hexadecimal values exactly, write both radios and reconnect the
+GCS so it reads the destination. Keep network settings and MAC acknowledgments
+enabled (MM=0 in the lab firmware). The supplied lab profile uses broadcast
+DH=0/DL=FFFF; it is not the confirmed transfer setup. Firmware does not write
+radio settings. Existing GPIO12/9600 and GPIO12/115200 environments remain available
+for the original lab wiring; do not select them with the camera CS on GPIO27.
+
+Two supplied logs download the same saved 640×480 image with unicast addressing:
+
+| Log | RSSI polling | Operation duration | Protocol timeouts/retries | Result |
+| --- | --- | --- | --- | --- |
+| `kfs-20261023T021016Z-o38jaxio.jsonl` | Off | 22.407 s | 0 / 0 | Downloaded, checksum verified |
+| `kfs-20261023T021158Z-r41bqc_5.jsonl` | On | 22.411 s | 0 / 0 | Downloaded, checksum verified |
+
+Both complete 260 READ chunks with steady progress. Polling returned a final
+-21 dBm reading. One rejected protocol line during OPEN in the polling-on run
+caused no retry or measurable slowdown. UTC log filenames fall on October 23;
+the local test date was October 22. Earlier broadcast examples had missing-reply
+timeouts; this pair supports broadcast delivery contributing to pauses and shows
+no meaningful polling overhead in these two runs.
+
+The prior 83,996-byte image's SD READ_FAILED at offset 34,816 was not physically
+diagnosed; local SDCHECK results were not supplied. The owner subsequently reported
+all seemed fixed, but two successful downloads do not establish a twenty-transfer
+reliability result or eliminate every possible SD fault. Keep USB/JSONL diagnostics
+and use SDCHECK if an SD error recurs. No speculative SD-recovery change is included.
 
 ## Wiring and build
 
@@ -86,10 +138,11 @@ The configuration deliberately retains the working lab board identifier
 | XBee DOUT → ESP32 RX | 16 |
 | ESP32 TX → XBee DIN | 17 |
 | SD chip select | 5 |
-| Camera chip select (held high) | 12 |
+| Camera chip select | 27 confirmed; 12 in original lab environments |
 | SPI SCK / MISO / MOSI | 18 / 19 / 23 |
 
-Keep the working radio pairing and transparent mode at **9600 baud, 8N1**.
+For the confirmed camera setup, use the GPIO27/115200/unicast configuration above.
+The original lab defaults remain **9600 baud, 8N1**, with GPIO12 camera CS.
 USB debug output is 115200 baud. Use the same power/ground wiring as the labs.
 The camera and SD card use separate chip selects and SPI transactions; camera
 CS is released before each SD operation.
@@ -151,6 +204,9 @@ markers, malformed/truncated frames and a fake-bus test of the production adapte
 with the unchanged vendor driver. These checks do not establish hardware timing.
 
 Open **this folder** in PlatformIO, then Build and Upload:
+
+The following commands select the original GPIO12/9600 lab defaults. For the
+confirmed camera hardware, select `esp32thing_plus_115200_camera_cs27` instead.
 
 ```sh
 pio run -e esp32thing_plus
@@ -317,7 +373,8 @@ Extract the **matching camera** GCS executable and this source ZIP from
 `feature/remote-camera`. All required Arducam sources and the MIT license are
 under `lib/Arducam_Mega-3.0.0`; no Lab 5 checkout is needed to build this package.
 Labs 4/5 remain unmodified references. Use PlatformIO **Project Tasks →
-esp32thing_plus_115200 → Upload** for the existing 115200 radios; the default
+esp32thing_plus_115200_camera_cs27 → Upload** for the confirmed GPIO27/115200 setup;
+`esp32thing_plus_115200` retains GPIO12/115200, and the default
 `esp32thing_plus` remains 9600. Confirm USB startup marker `KFS1 camera-2` and the
 camera sensor/model/status line. Retain existing radio AP/baud/network settings.
 
