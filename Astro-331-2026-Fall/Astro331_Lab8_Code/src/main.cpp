@@ -1,5 +1,5 @@
 // Lab 8: SD browser and verified file uploads/downloads over the Lab 4 XBee.
-// Camera preview is a later milestone; keep the camera deselected on shared SPI.
+// Remote single JPEG captures use the Lab 5 camera on the shared SPI bus.
 #include <Arduino.h>
 #include <SPI.h>
 #include <SdFat.h>
@@ -16,15 +16,32 @@ static_assert(SD_SPI_MHZ >= 1 && SD_SPI_MHZ <= 25, "SD SPI test clock must be 1.
 static_assert(XBEE_UART_BAUD == 9600 || XBEE_UART_BAUD == 115200,
               "Select a documented XBee UART baud rate");
 
-static const uint8_t SD_CS = 5, CAMERA_CS = 12;
+#ifndef CAMERA_CS_PIN
+#define CAMERA_CS_PIN 12
+#endif
+static const uint8_t SD_CS = 5, CAMERA_CS = CAMERA_CS_PIN;
 static const int SPI_SCK_PIN = 18, SPI_MISO_PIN = 19, SPI_MOSI_PIN = 23;
 static const int XBEE_RX = 16, XBEE_TX = 17;
 HardwareSerial Xbee(2);
 SdFat sd;
 bool sdReady = false;
+#include "camera_hardware.h"
+CameraHardware cameraHardware;
+kcam::Job<CameraHardware> cameraJob(cameraHardware);
 
 class SdBackend {
 public:
+    bool cameraBusy() const { return cameraJob.busy(); }
+    void cameraInfo(char* body, size_t n) {
+        // Refresh can recover late camera power without resetting a working link.
+        if (!serviceBusyForCamera() && !cameraHardware.ready()) cameraHardware.retry();
+        snprintf(body, n, "CAMERA|%s|%lu|%s|%s", cameraHardware.model(),
+                 (unsigned long)cameraHardware.mask(), cameraHardware.fault(), sdReady ? "SD_READY" : "SD_UNAVAILABLE");
+    }
+    const char* cameraStart(uint32_t id, unsigned mode, const char* path) { return cameraJob.start(id, mode, path, millis()); }
+    void cameraStatus(uint32_t id, char* body, size_t n) { cameraJob.status(id, body, n); }
+    void cameraDiagnostics(uint32_t id, char* body, size_t n) { cameraJob.diagnostics(id, body, n); }
+    void cameraAbort(uint32_t id) { cameraJob.abort(id); }
     int list(const char* path, uint32_t index, kfs::Entry& entry) {
         if (!sdReady) return -1;
         FsFile dir = sd.open(path, O_RDONLY);
@@ -175,12 +192,14 @@ public:
     }
     void close() { file_.close(); }
 private:
+    bool serviceBusyForCamera() const;
     FsFile file_;
     uint32_t lastReport_ = 0;
     char target_[kfs::MAX_PATH+1] = {}, temporary_[kfs::MAX_PATH+1] = {};
 };
 SdBackend backend;
 kfs::Service<SdBackend> service(backend);
+bool SdBackend::serviceBusyForCamera() const { return service.active() || cameraJob.busy(); }
 char line[kfs::MAX_LINE];
 size_t used = 0;
 bool overflow = false;
@@ -191,9 +210,10 @@ void setup() {
     Serial.begin(115200); // Never wait for USB: the satellite must boot untethered.
     Xbee.setRxBufferSize(2048);
     Xbee.begin(XBEE_UART_BAUD, SERIAL_8N1, XBEE_RX, XBEE_TX);
-    Serial.printf("[INFO] KFS1 manage-1 reset_reason=%d SD_SPI_MHZ=%u\n",
+    Serial.printf("[INFO] KFS1 camera-2 reset_reason=%d SD_SPI_MHZ=%u\n",
                   (int)esp_reset_reason(), (unsigned)SD_SPI_MHZ);
     Serial.printf("[INFO] XBee UART: %lu baud\n", (unsigned long)XBEE_UART_BAUD);
+    Serial.printf("[INFO] camera_cs=%u (GPIO12 is an ESP32 boot strap)\n", CAMERA_CS);
     pinMode(CAMERA_CS, OUTPUT); digitalWrite(CAMERA_CS, HIGH);
     pinMode(SD_CS, OUTPUT); digitalWrite(SD_CS, HIGH);
     pinMode(LED_BUILTIN, OUTPUT);
@@ -201,6 +221,7 @@ void setup() {
     sdReady = sd.begin(SdSpiConfig(SD_CS, SHARED_SPI, SD_SCK_MHZ(SD_SPI_MHZ), &SPI));
     Serial.println(sdReady ? "[INFO] SD ready" : "[ERROR] SD unavailable; check card and reset");
     if (!sdReady) Serial.printf("[SD_INIT] card=0x%02x data=0x%02x\n", sd.sdErrorCode(), sd.sdErrorData());
+    cameraHardware.begin();
     Serial.println("[USB] SDCHECK /absolute/path : three local read/CRC passes; disconnect GCS first");
     Xbee.println(sdReady ? "[INFO] Lab 8 ready - open Remote Files in GCS" :
                            "[ERROR] SD unavailable; check card and reset");
@@ -223,7 +244,7 @@ void processLine() {
 
 // USB-only diagnostic: bypasses the radio and protocol to expose raw SD errors.
 void sdCheck(const char* requested) {
-    if (service.active()) { Serial.println("[SDCHECK] busy: close the transfer or reset first"); return; }
+    if (service.active() || cameraJob.busy()) { Serial.println("[SDCHECK] busy: close the transfer or reset first"); return; }
     size_t length = strlen(requested);
     char hex[kfs::MAX_PATH*2+1], path[kfs::MAX_PATH+1];
     if (length > kfs::MAX_PATH) { Serial.println("[SDCHECK] path too long"); return; }
@@ -305,13 +326,14 @@ void loop() {
             else overflow = true;
         }
     }
+    cameraJob.tick(millis());
     now = millis();
     if (protocolQuiet && (uint32_t)(now-lastProtocol) > 30000) {
         if (service.active()) Serial.println("[KFS_EXPIRE] no protocol activity for 30 seconds");
         service.expire(); protocolQuiet = false;
     }
     // Suppress unsolicited radio text while a protocol session is active.
-    if (!protocolQuiet && !used && (uint32_t)(now-lastHeartbeat) >= 2000) {
+    if (!protocolQuiet && !cameraJob.busy() && !used && (uint32_t)(now-lastHeartbeat) >= 2000) {
         lastHeartbeat = now;
         Xbee.println(".");
     }
