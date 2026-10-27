@@ -10,6 +10,13 @@ KestrelSAT/XBee hardware on **October 20, 2026**.
 
 ## Projects
 
+**2026-10-27 — Transfer-speed test branch:** `feature/transfer-speed` adds optional
+larger chunks, Base64 and two-request batches to the current Lab 8 firmware.
+Use the matching GCS branch and the
+[installation/comparison procedure](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#speed-test-installation-and-comparison-2026-10-27).
+The known baud/CS environments and legacy transfers remain available. Hardware
+speed results are pending.
+
 **2026-10-23 — Source documentation:** The Lab 8 application now has detailed
 comments covering the protocol, SD backend, camera state machine and hardware
 boundaries. See its [source reading order](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#source-reading-order).

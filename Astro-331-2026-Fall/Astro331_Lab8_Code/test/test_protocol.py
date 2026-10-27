@@ -15,6 +15,7 @@ import tty
 import unittest
 import zlib
 import io
+import base64
 from PIL import Image
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -24,7 +25,7 @@ args, remaining = parser.parse_known_args()
 sys.path.insert(0, str(args.gcs))
 import serial
 from kestrelsat.camera_files import CameraClient, new_capture
-from kestrelsat.remote_files import Client, Cancelled, RemoteError, UploadUncertain, OperationUncertain, encode, decode
+from kestrelsat.remote_files import PROFILES, PROFILE_LABELS, Client, Cancelled, RemoteError, UploadUncertain, OperationUncertain, encode, decode
 
 
 class FirmwareProtocolTests(unittest.TestCase):
@@ -79,6 +80,95 @@ class FirmwareProtocolTests(unittest.TestCase):
     def camera(self, fault=''):
         peer = self.client(fault)
         return CameraClient(peer.port, timeout=.12, attempts=4)
+
+    def test_speed_profiles_binary_upload_download_and_boundary_lengths(self):
+        # These tests drive the real embedded parser, codecs and replay cache.
+        # The existing suite now also exercises Auto/FAST1 on real C++ by default.
+        for profile in PROFILE_LABELS:
+            client = self.client(); client.requested_profile = profile
+            for size in (0, 1, 2, 127, 128, 129, 255, 256, 257, 511, 512, 513, 1025, 8199):
+                with self.subTest(profile=profile, size=size):
+                    data = (bytes(range(256))*33)[:size]
+                    source = self.root/'source'; source.write_bytes(data)
+                    target = f'/speed-{profile}-{size}.bin'
+                    client.upload(source, target)
+                    self.assertEqual((self.sd/target[1:]).read_bytes(), data)
+                    client.download(target, self.root/'speed-result')
+                    self.assertEqual((self.root/'speed-result').read_bytes(), data)
+                    expected = PROFILES['b64_512' if profile == 'auto' else profile]
+                    self.assertEqual(client.transfer_profile, expected)
+            self.assertFalse(list(self.sd.glob('.kfs-*.part')))
+
+    def test_speed_batch_recovers_lost_commands_replies_corruption_and_reordering(self):
+        for direction in ('upload', 'download'):
+            for fault in ('speed-drop-command', 'speed-drop-second', 'speed-corrupt-second',
+                          'speed-reorder', 'drop' if direction == 'download' else 'upload-drop-ack',
+                          'duplicate' if direction == 'download' else 'upload-duplicate-write',
+                          'truncate' if direction == 'download' else 'upload-corrupt-ack'):
+                with self.subTest(direction=direction, fault=fault):
+                    client = self.client(fault); client.requested_profile = 'batch2'
+                    if direction == 'download':
+                        client.download('/binary.bin', self.root/'batch-result')
+                        self.assertEqual((self.root/'batch-result').read_bytes(), self.payload)
+                    else:
+                        source = self.root/'batch-source'; source.write_bytes(self.payload)
+                        target = '/batch-'+fault+'.bin'
+                        client.upload(source, target)
+                        self.assertEqual((self.sd/target[1:]).read_bytes(), self.payload)
+                    if fault not in ('speed-reorder', 'duplicate', 'upload-duplicate-write'):
+                        self.assertGreater(client.counters['retries'], 0)
+                    self.assertFalse(list(self.sd.glob('.kfs-*.part')))
+
+    def test_speed_profiles_keep_full_crc_and_sd_recovery(self):
+        for profile in ('hex256', 'b64_256', 'b64_512', 'batch2'):
+            with self.subTest(profile=profile):
+                client = self.client('read-scattered'); client.requested_profile = profile
+                client.download('/binary.bin', self.root/'recovered')
+                self.assertEqual((self.root/'recovered').read_bytes(), self.payload)
+                self.assertEqual(client.counters['retries'], 0) # Local SD retries, not RF retries.
+                bad = self.client('bad-final-crc'); bad.requested_profile = profile
+                protected = self.root/'protected'; protected.write_bytes(b'existing user file')
+                with self.assertRaisesRegex(RemoteError, 'checksum'):
+                    bad.download('/binary.bin', protected)
+                self.assertEqual(protected.read_bytes(), b'existing user file')
+                self.assertFalse(list(self.root.glob('.kestrelsat-*.part')))
+
+    def test_fast_negotiation_rejects_unsupported_sizes_and_preserves_legacy(self):
+        client = self.client()
+        self.assertIn('FAST1', client.capabilities())
+        client.hello() # HELLO still reports the original 128-byte contract.
+        for chunk, codec in ((0, 'B64'), (513, 'B64'), (512, 'HEX'), (256, 'ZIP'), ('-1', 'B64')):
+            with self.subTest(chunk=chunk, codec=codec), self.assertRaisesRegex(RemoteError, 'BAD_PROFILE'):
+                client.request('OPENX', '/binary.bin'.encode().hex(), chunk, codec)
+        self.assertEqual(client.list_directory('/')[0].name, 'binary.bin')
+        client.requested_profile = 'legacy'
+        client.download('/binary.bin', self.root/'legacy')
+        self.assertEqual((self.root/'legacy').read_bytes(), self.payload)
+        self.assertEqual(client.transfer_profile.chunk, 128)
+
+    def test_strict_base64_rejections_do_not_advance_or_write_upload(self):
+        client = self.client()
+        payload = bytes(range(256))*2
+        ready = client.request('PUTX', '/strict.bin'.encode().hex(), len(payload),
+                               f'{zlib.crc32(payload):08x}', 512, 'B64')
+        token = ready[1]
+        self.assertEqual(ready[3:], ['512', 'B64'])
+        for text in ('AB==', 'AAB=', 'AAAA=', '=AAA', '!!!!', 'AAAAAA=A', 'A'*688):
+            with self.subTest(text=text[:12]), self.assertRaisesRegex(RemoteError, 'BAD_CHUNK'):
+                client.request('WRITEX', token, 0, text)
+            self.assertEqual(client.request('STATUS', token), ['UPLOADING', '0', '512'])
+        self.assertEqual(client.request('WRITEX', token, 0, base64.b64encode(payload).decode()),
+                         ['ACK', '512', '512'])
+        client.request('VERIFY', token, 0)
+        client.request('COMMIT', token)
+        self.assertEqual((self.sd/'strict.bin').read_bytes(), payload)
+
+    def test_twenty_consecutive_fast_image_sized_downloads(self):
+        client = self.client(); client.requested_profile = 'b64_512'
+        for number in range(20):
+            client.download('/binary.bin', self.root/f'image-{number}.jpg')
+            self.assertEqual((self.root/f'image-{number}.jpg').read_bytes(), self.payload)
+        self.assertEqual(client.counters['retries'], 0)
 
     def test_camera_production_adapter_with_vendor_driver(self):
         subprocess.run([str(self.hardware)], check=True, timeout=5)
@@ -530,7 +620,7 @@ class FirmwareProtocolTests(unittest.TestCase):
         client = self.client('read-permanent')
         destination = self.root / 'result'
         destination.write_bytes(b'original')
-        with self.assertRaisesRegex(RemoteError, 'READ_FAILED.*4096.*128.*-1.*3'):
+        with self.assertRaisesRegex(RemoteError, 'READ_FAILED.*4096.*512.*-1.*3'):
             client.download('/binary.bin', destination)
         self.assertEqual(destination.read_bytes(), b'original')
         self.assertFalse(list(self.root.glob('*.part')))

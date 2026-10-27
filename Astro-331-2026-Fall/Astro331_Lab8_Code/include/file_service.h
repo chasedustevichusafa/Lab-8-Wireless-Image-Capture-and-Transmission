@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "transfer_codec.h"
 
 namespace kfs {
 // READING GUIDE: this header is the satellite half of remote_files.py in the
@@ -29,7 +30,10 @@ namespace kfs {
 // local buffers and the line receiver must all agree on the resulting format.
 static const size_t MAX_LINE = 1024;
 static const size_t MAX_PATH = 192;
-static const size_t CHUNK = 128;
+static const size_t CHUNK = 128; // Immutable legacy HELLO/READ/WRITE contract.
+static const size_t MAX_CHUNK = 512;
+static const size_t ENCODED_CHUNK = 4*((MAX_CHUNK+2)/3);
+static_assert(ENCODED_CHUNK+100 < MAX_LINE, "Fast data frames must fit the existing line parser");
 static const uint8_t READ_ATTEMPTS = 3;
 
 // Incremental reflected CRC-32 using polynomial 0xEDB88320. The caller begins
@@ -154,7 +158,7 @@ public:
     void expire() {
         if (active_ && uploading_) backend_.abortUpload();
         else backend_.close();
-        active_ = uploading_ = verifying_ = false; cachedRequest_[0] = 0;
+        active_ = uploading_ = verifying_ = false; cachedRequest_[0] = 0; clearReplay();
     }
 
     // Ignore non-protocol text or damaged requests. No unchecked command is run.
@@ -176,6 +180,11 @@ public:
         // metadata queries do not immediately erase the destructive result.
         // This is bounded last-result retention in RAM, not a history of every
         // command and not persistence across a satellite reset.
+        // Two successful fast data requests are retained independently. The GCS
+        // drains a whole two-request batch before opening another, so a lost
+        // first reply can be replayed even after the second request advanced CRC.
+        for (unsigned i = 0; i < 2; ++i)
+            if (replay_[i].request[0] && !strcmp(line, replay_[i].request)) return replay_[i].response;
         if (mutationRequest_[0] && !strcmp(line, mutationRequest_)) return mutationResponse_;
         if (cachedRequest_[0] && !strcmp(line, cachedRequest_)) return response_;
         // Split a private copy: cachedRequest_ must retain the exact wire bytes
@@ -200,11 +209,12 @@ public:
         const char* op = fields[2];
         char path[MAX_PATH + 1];
         // HELLO establishes the base transfer contract. CAPS advertises optional
-        // features without changing version 1's 128-byte file chunks. Camera
+        // features while retaining legacy commands' 128-byte chunks. FAST1 uses
+        // explicit OPENX/PUTX session negotiation, never a silent CHUNK change. Camera
         // info/status/abort/diagnostics are handled before the camera-busy gate
         // so an operator can observe or stop an active job.
         if (!strcmp(op, "HELLO") && count == 3) return reply("HELLO|1|128");
-        if (!strcmp(op, "CAPS") && count == 3) return reply("CAPS|UPLOAD1|MANAGE1|CAMERA1|CAMDIAG1|128");
+        if (!strcmp(op, "CAPS") && count == 3) return reply("CAPS|UPLOAD1|MANAGE1|CAMERA1|CAMDIAG1|FAST1|128");
         if (!strcmp(op, "CAMINFO") && count == 3) {
             char body[128]; backend_.cameraInfo(body, sizeof(body)); return reply(body);
         }
@@ -269,7 +279,11 @@ public:
         // reuse of a leftover temporary or overwrite of an existing image.
         // The opening request ID doubles as the session token, so the GCS can
         // attempt ABORT even when the READY reply was never received.
-        if (!strcmp(op, "PUT") && count == 6) {
+        if ((!strcmp(op, "PUT") && count == 6) || (!strcmp(op, "PUTX") && count == 8)) {
+            bool fast = !strcmp(op, "PUTX");
+            uint32_t chunk = CHUNK;
+            bool compact = false;
+            if (fast && !profile(fields[6], fields[7], chunk, compact)) return reply("ERR|BAD_PROFILE");
             if (active_) return reply("ERR|BUSY");
             uint32_t size, crc;
             if (!decodePath(fields[3], path) || !uploadPath(path)) return reply("ERR|BAD_PATH");
@@ -283,14 +297,16 @@ public:
             const char* error = backend_.beginUpload(path, temporary, size);
             if (error) { char body[80]; snprintf(body, sizeof(body), "ERR|%s", error); return reply(body); }
             if (completed_ && completedToken_ == id) completed_ = false;
+            chunk_ = chunk; compact_ = compact; fast_ = fast; clearReplay();
             size_ = size; expectedCrc_ = crc; token_ = id; next_ = 0; crc_ = 0xffffffffUL;
             active_ = uploading_ = true; verifying_ = false; lastWriteLength_ = 0;
             verifyNext_ = 0; verifyCrc_ = 0xffffffffUL; lastVerify_ = UINT32_MAX;
-            char body[64];
+            char body[80];
             snprintf(body, sizeof(body), "READY|%08lx|%lu", (unsigned long)token_, (unsigned long)size_);
+            if (fast_) appendProfile(body, sizeof(body));
             return reply(body);
         }
-        if ((!strcmp(op, "WRITE") && count == 6) ||
+        if (((!strcmp(op, "WRITE") || !strcmp(op, "WRITEX")) && count == 6) ||
             (!strcmp(op, "VERIFY") && count == 5) ||
             ((!strcmp(op, "COMMIT") || !strcmp(op, "ABORT") || !strcmp(op, "STATUS")) && count == 4)) {
             uint32_t token;
@@ -305,24 +321,29 @@ public:
                 return reply(removed ? "ABORTED|REMOVED" : "ABORTED|LEFTOVER");
             }
             if (!strcmp(op, "STATUS")) return position("UPLOADING", next_);
-            if (!strcmp(op, "WRITE")) {
+            if (!strcmp(op, "WRITE") || !strcmp(op, "WRITEX")) {
+                if (fast_ != !strcmp(op, "WRITEX")) return reply("ERR|BAD_PROFILE");
                 uint32_t offset;
-                size_t length = strlen(fields[5]);
-                if (!number(fields[4], offset) || !length || length % 2 || length/2 > CHUNK)
-                    return reply("ERR|BAD_CHUNK");
-                size_t n = length/2;
-                uint8_t bytes[CHUNK];
-                for (size_t i = 0; i < n; ++i) {
-                    int hi = nibble(fields[5][2*i]), lo = nibble(fields[5][2*i+1]);
-                    if (hi < 0 || lo < 0) return reply("ERR|BAD_CHUNK");
-                    bytes[i] = (uint8_t)((hi << 4) | lo);
+                size_t length = strlen(fields[5]), n = 0;
+                uint8_t bytes[MAX_CHUNK];
+                if (!number(fields[4], offset) || !length) return reply("ERR|BAD_CHUNK");
+                if (compact_) {
+                    if (!base64Decode(fields[5], bytes, chunk_, n)) return reply("ERR|BAD_CHUNK");
+                } else {
+                    if (length % 2 || length/2 > chunk_) return reply("ERR|BAD_CHUNK");
+                    n = length/2;
+                    for (size_t i = 0; i < n; ++i) {
+                        int hi = nibble(fields[5][2*i]), lo = nibble(fields[5][2*i+1]);
+                        if (hi < 0 || lo < 0) return reply("ERR|BAD_CHUNK");
+                        bytes[i] = (uint8_t)((hi << 4) | lo);
+                    }
                 }
                 // Preserve last WRITE acknowledgment independently of other
                 // requests. A repeated chunk must never be written/CRC'd twice.
                 if (lastWriteLength_ == n && offset == lastWriteOffset_ &&
-                    !memcmp(lastWrite_, bytes, n)) return position("ACK", next_);
+                    !memcmp(lastWrite_, bytes, n)) return position("ACK", lastWriteOffset_+(uint32_t)lastWriteLength_);
                 if (verifying_ || offset != next_ || next_ >= size_ ||
-                    n != (size_-next_ < CHUNK ? size_-next_ : CHUNK)) return reply("ERR|BAD_OFFSET");
+                    n != (size_-next_ < chunk_ ? size_-next_ : chunk_)) return reply("ERR|BAD_OFFSET");
                 // An SD attempt is different from a GCS/radio retry. Repeat the
                 // same offset and buffered bytes locally; advance CRC/next_
                 // only after one complete write. Partial writes must not cause
@@ -402,17 +423,23 @@ public:
         // an incomplete transfer. Only one file session is active. Opening a
         // new download replaces an older download but may not displace an
         // upload's exclusive temporary file.
-        if (!strcmp(op, "OPEN") && count == 4) {
+        if ((!strcmp(op, "OPEN") && count == 4) || (!strcmp(op, "OPENX") && count == 6)) {
+            bool fast = !strcmp(op, "OPENX");
+            uint32_t chunk = CHUNK;
+            bool compact = false;
+            if (fast && !profile(fields[4], fields[5], chunk, compact)) return reply("ERR|BAD_PROFILE");
             if (active_ && uploading_) return reply("ERR|BUSY");
             if (!decodePath(fields[3], path)) return reply("ERR|BAD_PATH");
             backend_.close(); active_ = false;
             if (!backend_.open(path, size_)) return reply("ERR|FILE_UNAVAILABLE");
+            chunk_ = chunk; compact_ = compact; fast_ = fast; clearReplay();
             token_ = id; next_ = 0; crc_ = 0xFFFFFFFFUL; active_ = true;
-            char body[64];
+            char body[80];
             snprintf(body, sizeof(body), "FILE|%08lx|%lu", (unsigned long)token_, (unsigned long)size_);
+            if (fast_) appendProfile(body, sizeof(body));
             return reply(body);
         }
-        if ((!strcmp(op, "READ") && count == 5) ||
+        if (((!strcmp(op, "READ") || !strcmp(op, "READX")) && count == 5) ||
             ((!strcmp(op, "END") || !strcmp(op, "CLOSE")) && count == 4)) {
             uint32_t token;
             if (!number(fields[3], token, 16) || !active_ || uploading_ || token != token_)
@@ -428,15 +455,15 @@ public:
                 backend_.close(); active_ = false;
                 return reply(body);
             }
+            if (fast_ != !strcmp(op, "READX")) return reply("ERR|BAD_PROFILE");
             uint32_t offset;
             if (!number(fields[4], offset) || offset != next_ || next_ >= size_)
                 return reply("ERR|BAD_OFFSET");
-            // READ is sequential stop-and-wait: next_ is the only acceptable
-            // new offset. Radio duplicates were caught by the frame replay
-            // cache above. This prevents skipped bytes and double CRC updates,
-            // but each chunk waits for a round trip before the next is sent.
-            uint8_t bytes[CHUNK];
-            size_t n = (size_ - next_ < CHUNK) ? size_ - next_ : CHUNK;
+            // New reads remain sequential even in two-request batches. Replay
+            // answers duplicates without rereading or hashing twice; a future
+            // offset rejected after a lost preceding request may be retried.
+            uint8_t bytes[MAX_CHUNK];
+            size_t n = (size_ - next_ < chunk_) ? size_ - next_ : chunk_;
             int got = -1;
             for (uint8_t attempt = 1; attempt <= READ_ATTEMPTS; ++attempt) {
                 got = backend_.readAt(next_, bytes, n, attempt);
@@ -448,9 +475,12 @@ public:
                          (unsigned long)next_, (unsigned)n, got, (unsigned)READ_ATTEMPTS);
                 backend_.close(); active_ = false; return reply(body);
             }
-            char hex[CHUNK*2+1], body[CHUNK*2+40];
-            hexEncode(bytes, n, hex);
-            snprintf(body, sizeof(body), "DATA|%lu|%s", (unsigned long)next_, hex);
+            // 256-byte hex or 512-byte Base64 fits below MAX_LINE, including
+            // offset, request ID and CRC. No full-file buffer is allocated.
+            char encoded[ENCODED_CHUNK+1], body[ENCODED_CHUNK+40];
+            if (compact_) base64Encode(bytes, n, encoded);
+            else hexEncode(bytes, n, encoded);
+            snprintf(body, sizeof(body), "DATA|%lu|%s", (unsigned long)next_, encoded);
             crc_ = crcUpdate(crc_, bytes, n);
             next_ += n;
             return reply(body);
@@ -458,6 +488,20 @@ public:
         return reply("ERR|BAD_COMMAND");
     }
 private:
+    static bool profile(const char* size, const char* codec, uint32_t& chunk, bool& compact) {
+        if (!number(size, chunk)) return false;
+        compact = !strcmp(codec, "B64");
+        if (!compact && strcmp(codec, "HEX")) return false;
+        return (chunk == 128 || chunk == 256 || (compact && chunk == 512));
+    }
+    void appendProfile(char* body, size_t n) const {
+        size_t used = strlen(body);
+        snprintf(body+used, n-used, "|%u|%s", (unsigned)chunk_, compact_ ? "B64" : "HEX");
+    }
+    void clearReplay() {
+        for (unsigned i = 0; i < 2; ++i) replay_[i].request[0] = 0;
+        replayNext_ = 0;
+    }
     const char* position(const char* op, uint32_t offset) {
         char body[64];
         snprintf(body, sizeof(body), "%s|%lu|%lu", op, (unsigned long)offset, (unsigned long)size_);
@@ -480,6 +524,15 @@ private:
         size_t n = strlen(response_);
         uint32_t crc = crcUpdate(0xFFFFFFFFUL, (const uint8_t*)response_, n) ^ 0xFFFFFFFFUL;
         snprintf(response_ + n, sizeof(response_)-n, "|%08lx\n", (unsigned long)crc);
+        // A rejected future offset is transient, not a completed command. Do
+        // not cache that rejection: after repairing the earlier request, the
+        // SAME request ID must be permitted to execute at its intended offset.
+        if (!strcmp(body, "ERR|BAD_OFFSET")) cachedRequest_[0] = 0;
+        if (fast_ && (!strncmp(body, "DATA|", 5) || !strncmp(body, "ACK|", 4))) {
+            strcpy(replay_[replayNext_].request, cachedRequest_);
+            strcpy(replay_[replayNext_].response, response_);
+            replayNext_ = (replayNext_+1) % 2;
+        }
         return response_;
     }
     // Memory ownership map: command replay, transfer progress and upload replay
@@ -494,7 +547,13 @@ private:
     uint32_t expectedCrc_ = 0, verifyNext_ = 0, verifyCrc_ = 0xffffffffUL, lastVerify_ = UINT32_MAX;
     uint32_t lastWriteOffset_ = 0, completedToken_ = 0, completedSize_ = 0, completedCrc_ = 0;
     size_t lastWriteLength_ = 0;
-    uint8_t lastWrite_[CHUNK] = {};
+    uint8_t lastWrite_[MAX_CHUNK] = {};
+    // Fixed storage bounds replay memory to four KiB, independent of file size.
+    struct Replay { char request[MAX_LINE] = {}; char response[MAX_LINE] = {}; };
+    Replay replay_[2];
+    unsigned replayNext_ = 0;
+    uint32_t chunk_ = CHUNK;
+    bool compact_ = false, fast_ = false;
     uint32_t id_ = 0, token_ = 0, size_ = 0, next_ = 0, crc_ = 0;
     char cachedRequest_[MAX_LINE] = {};
     char response_[MAX_LINE] = {};

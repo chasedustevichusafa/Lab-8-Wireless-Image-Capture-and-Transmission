@@ -6,6 +6,14 @@ uploads/downloads. Viewing is an on-demand download; no live preview is started.
 
 ## Dated changes
 
+- **2026-10-27 — Transfer-speed test firmware:** Added FAST1 per-file negotiation,
+  256/512-byte chunks, compact Base64 and a two-entry reply cache for optional
+  two-request batches. Legacy HELLO and 128-byte hex commands remain compatible.
+  CRC checks, synced upload ACKs, SD read-back, file protection and camera control
+  are retained. Startup marker is `KFS1 speed-1`. Radio baud/AP/address settings
+  and all four build environments remain unchanged. Hardware speed results are
+  pending; use the matching GCS speed-test branch and procedure below.
+
 - **2026-10-23 — Code walkthrough:** Added detailed comments to the application
   sources and environment definitions, explaining KFS framing/replay, SD retries,
   upload publication, camera states, JPEG framing, SPI ownership and deadlines.
@@ -19,8 +27,9 @@ uploads/downloads. Viewing is an on-demand download; no live preview is started.
    channels; radio configuration is still done in XCTU.
 2. `include/file_service.h`: KFS1 framing/CRC, field validation, request replay,
    one active transfer, upload/download states and retained mutation results.
-   Radio retries and local SD attempts are different layers. File chunks remain
-   128 bytes with hex encoding and one request/reply at a time.
+   Radio retries and local SD attempts are different layers. Legacy transfers
+   use 128-byte hex; FAST1 negotiates larger blocks and optional two-request batches.
+   `include/transfer_codec.h` implements bounded, strict Base64 encode/decode.
 3. `include/camera_job.h`: capture, bounded FIFO extraction, SD read-back and
    publication. Job identity avoids duplicate exposures after uncertain replies.
 4. `include/jpeg_stream.h`: marker/segment parsing across FIFO blocks, including
@@ -32,6 +41,62 @@ uploads/downloads. Viewing is an on-demand download; no live preview is started.
    does not program either radio's AP, BD or destination settings.
 7. `test/test_protocol.py`: host fault injection and GCS interoperability checks.
    Compilation and simulation do not establish hardware reliability.
+
+## Speed-test installation and comparison (2026-10-27)
+
+Download **KestrelSAT-Lab8-Firmware** from a successful Actions run on
+`feature/transfer-speed` and extract the ZIP. Open the extracted folder containing
+`platformio.ini` in PlatformIO. For the confirmed GPIO27/115200 camera setup,
+upload `esp32thing_plus_115200_camera_cs27`. Keep the existing radio configuration:
+both UARTs 115200, satellite AP=0, ground AP=1/GCS API mode, working unicast
+destinations and MAC acknowledgments. USB diagnostics remain at 115200.
+
+Use the matching GCS Windows build from `feature/transfer-speed`. Camera and
+Remote Files now share a **Transfer profile** selector:
+
+| Selection | Useful bytes/block | Codec | Requests per batch |
+| --- | ---: | --- | ---: |
+| Baseline | 128 | Hex | 1 |
+| Larger blocks | 256 | Hex | 1 |
+| Compact | 256 | Base64 | 1 |
+| Fast / Auto with FAST1 | 512 | Base64 | 1 |
+| Experimental | 512 | Base64 | 2 |
+
+Download the same image at least five times per profile without changing antenna
+position, baud, RSSI polling or radio settings. Begin with polling off, then
+repeat the best stable profile with polling enabled. Repeat uploads with fresh
+destination names. Keep failures and retry counts. Export PNG and CSV using
+Transfer Statistics; `transfer_profile` identifies the actual negotiated mode in
+session/recording CSVs, including Auto fallback. Use a multi-operation recording
+to compare back-to-back runs. There is no live preview.
+
+512-byte blocks need one-quarter as many data requests as Baseline. Base64 uses
+four characters for three bytes instead of six hex characters. Actual on-air
+speed depends on RF fragmentation, turnaround, retries and SD latency; Batch 2
+may be slower on a half-duplex radio. Auto defaults to Fast without batching.
+After a failure, keep diagnostics, compare Fast without batching, then Baseline.
+
+Protocol details: CAPS adds `FAST1` while retaining its trailing `128` and legacy
+HELLO. `OPENX|pathHex|chunk|codec` and
+`PUTX|pathHex|size|crcHex|chunk|codec` accept 128/256-byte HEX or 128/256/512-byte B64.
+FILE/READY echo `chunk|codec`. READX/WRITEX use the same token/offset layout as
+READ/WRITE, with the agreed encoding in DATA/WRITEX. All frames retain CRC32 and
+stay below the existing 1024-byte limit. Base64 is compact text, not a raw binary
+UART protocol. END/VERIFY/COMMIT and whole-file verification remain unchanged.
+
+Two-entry replay storage is fixed at approximately 4 KiB. The GCS confirms both
+members of a batch before opening another, retrying only unconfirmed commands
+with their original IDs. Successful replies survive intervening metadata queries.
+A future-offset rejection after a missing preceding command is not cached; it
+can succeed after that missing command is repaired. No unbounded window is used.
+Auto detects old firmware and falls back before opening a file; old GCS clients
+continue using legacy commands with this firmware. No transfer silently changes
+profiles after an SD error, timeout or checksum mismatch.
+
+Run `python test/test_protocol.py --gcs /path/to/KestrelSAT-GCS` against the matching
+GCS branch for codec, replay, loss/corruption/reordering, file protection and
+twenty-download regression checks. Build all four environments before testing.
+See the [complete GCS comparison guide](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/feature/transfer-speed/docs/transfer-speed.md).
 
 ## Earlier dated changes
 

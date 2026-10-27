@@ -165,13 +165,31 @@ int main(int argc, char** argv) {
     kfs::Service<HostBackend> service(backend);
     std::string line, fault = argc > 2 ? argv[2] : "";
     bool injected = false;
+    unsigned fastReplies = 0;
+    std::string heldReply;
     while (std::getline(std::cin, line)) {
         // The embedded UART receiver drops an oversized line before handle().
         if (line.size() >= kfs::MAX_LINE) continue;
         if (!line.empty()) backend.cameraTick();
+        // Lose a complete request before the parser sees it. The later member
+        // of its batch gets BAD_OFFSET, so recovery tests exercise both sides
+        // of the missing-command case, not only cached reply retransmission.
+        if (fault == "speed-drop-command" && !injected &&
+                (line.find("|READX|") != std::string::npos || line.find("|WRITEX|") != std::string::npos)) {
+            injected = true; continue;
+        }
         const char* response = service.handle(line.c_str());
         if (!response) continue;
         std::string frame(response);
+        if (frame.find("|DATA|") != std::string::npos || frame.find("|ACK|") != std::string::npos) {
+            ++fastReplies;
+            if (fault == "speed-drop-second" && fastReplies == 2) continue;
+            if (fault == "speed-corrupt-second" && fastReplies == 2) frame[frame.size()-3] ^= 1;
+            if (fault == "speed-reorder" && fastReplies == 1) { heldReply = frame; continue; }
+            if (fault == "speed-reorder" && fastReplies == 2) {
+                std::cout << frame << heldReply << std::flush; heldReply.clear(); continue;
+            }
+        }
         if (fault == "camera-drop-start" && line.find("|CAPTURE|") != std::string::npos) continue;
         if (fault == "camera-drop-status" && frame.find("|CAMJOB|") != std::string::npos) continue;
         if ((fault == "manage-drop-reply" || fault == "manage-drop-all" || fault == "manage-expire-reply") &&

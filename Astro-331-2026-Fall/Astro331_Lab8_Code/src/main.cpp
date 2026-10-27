@@ -264,7 +264,7 @@ void setup() {
     Serial.begin(115200); // Never wait for USB: the satellite must boot untethered.
     Xbee.setRxBufferSize(2048);
     Xbee.begin(XBEE_UART_BAUD, SERIAL_8N1, XBEE_RX, XBEE_TX);
-    Serial.printf("[INFO] KFS1 camera-2 reset_reason=%d SD_SPI_MHZ=%u\n",
+    Serial.printf("[INFO] KFS1 speed-1 reset_reason=%d SD_SPI_MHZ=%u\n",
                   (int)esp_reset_reason(), (unsigned)SD_SPI_MHZ);
     Serial.printf("[INFO] XBee UART: %lu baud\n", (unsigned long)XBEE_UART_BAUD);
     Serial.printf("[INFO] camera_cs=%u (GPIO12 is an ESP32 boot strap)\n", CAMERA_CS);
