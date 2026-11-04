@@ -1,24 +1,183 @@
 # Lab 8: remote JPEG capture and verified file transfers
 
-Upload this project to use the GCS **Remote Files** tab. Labs 4 and 5 are left
-unchanged. This build supports single JPEG capture to SD and verified file
-uploads/downloads. Viewing is an on-demand download; no live preview is started.
+**Final operating documentation — November 4, 2026 (America/Denver).**
+Upload this PlatformIO project for the completed KestrelSAT GCS **Remote Files**,
+**Camera** and **Live Preview** workflows. Labs 4/5 remain reference projects.
+The owner confirmed operation of the merged features; use current `main` sources
+in both repositories. Preview is repeated still capture/download orchestrated by
+the GCS, not an additional onboard streaming firmware. Dedicated Link Tracker
+likewise uses the existing service, with RSSI collected by the ground radio/GCS.
 
-## Dated changes
+## Download this project on Windows
 
-- **2026-10-27 — Transfer-speed test firmware:** Added FAST1 per-file negotiation,
-  256/512-byte chunks, compact Base64 and a two-entry reply cache for optional
-  two-request batches. Legacy HELLO and 128-byte hex commands remain compatible.
-  CRC checks, synced upload ACKs, SD read-back, file protection and camera control
-  are retained. Startup marker is `KFS1 speed-1`. Radio baud/AP/address settings
-  and all four build environments remain unchanged. Hardware speed results are
-  pending; use the matching GCS speed-test branch and procedure below.
+1. Sign into GitHub and open [Download Lab 8 firmware](https://github.com/chasedustevichusafa/Lab-8-Wireless-Image-Capture-and-Transmission/actions/workflows/lab8-firmware.yml).
+   Select a successful **main** run for the desired source commit, then download
+   **KestrelSAT-Lab8-Firmware** from Artifacts.
+2. Extract the ZIP, and open **KestrelSAT-Lab8** in PlatformIO. `platformio.ini`
+   must be directly inside the opened folder. The package contains the complete
+   application, tests, required Arducam sources and license. Lab 5 is not needed.
+3. Select **Project Tasks → esp32thing_plus_115200_camera_cs27 → Upload** for
+   the confirmed camera wire on GPIO27. Confirm USB startup **KFS1 speed-1**,
+   `camera_cs=27` and **XBee UART: 115200 baud**.
+4. Configure both radios separately in XCTU as below, close XCTU, then launch the
+   matching [main GCS executable](https://github.com/chasedustevichusafa/KestrelSAT-GCS/actions/workflows/build-windows.yml).
 
-- **2026-10-23 — Code walkthrough:** Added detailed comments to the application
-  sources and environment definitions, explaining KFS framing/replay, SD retries,
-  upload publication, camera states, JPEG framing, SPI ownership and deadlines.
-  Executable code and build settings are unchanged; no speed experiment is
-  implemented. The source-artifact workflow builds this branch and retains main.
+This is a **source ZIP**, not a precompiled flash binary. The source workflow
+checks required files and a Windows ZIP extraction/checksum round-trip; it does
+not compile or upload firmware. Artifacts expire after **30 days**. Old unexpired
+runs remain downloadable; Git retains committed source after artifact expiry.
+**Run workflow** can package another available ref. Relevant main pushes and
+project/workflow pull requests automatically validate packaging, including main
+merges. The small package avoids legacy whole-repository Windows path limits.
+
+## Confirmed camera and radio setup — 2026-10-22
+
+| Setting | Confirmed operating value |
+| --- | --- |
+| PlatformIO environment | `esp32thing_plus_115200_camera_cs27` |
+| Board / framework | `sparkfun_esp32s2_thing_plus_c` / Arduino; retain working lab configuration |
+| Satellite XBee UART | 115200, 8N1, **AP=0** |
+| Ground XBee / GCS | 115200, 8N1, **AP=1** / **XBee API (AP=1)** |
+| Camera CS | GPIO27 |
+| SD SPI / USB monitor | 25 MHz / 115200 baud |
+| Addressing | Unicast to the peer's SH/SL, with working MAC acknowledgments |
+
+Read each radio's hexadecimal SH/SL in XCTU. Set ground **DH=Satellite SH,
+DL=Satellite SL**, and satellite **DH=Ground SH, DL=Ground SL**, write both, then
+reconnect the GCS. Retain the working network/security settings and MAC ACKs
+(MM=0 in the supplied lab profile). The lab's **DH=0/DL=FFFF** is broadcast and
+is separate from the confirmed unicast configuration.
+
+AP=0 passes serial bytes; AP=1 frames the local ground-radio/computer UART for
+addressing and diagnostics. Ground API envelopes are removed/added locally, so
+the satellite remains AP=0. The current GCS supports legacy `0x80`/`0x81` AO
+output and modern `0x90`/`0x91` receive frames. Neither API mode nor a faster UART
+changes the radio's RF bitrate. Firmware never rewrites radio settings.
+
+The confirmed camera/GPIO27 and unicast setup resolved the reported working
+issues. Two same-image 640×480 unicast downloads took **22.407 s RSSI off** and
+**22.411 s RSSI on**, each with zero protocol timeouts/retries and verified CRCs
+(`kfs-20261023T021016Z-o38jaxio.jsonl` / `kfs-20261023T021158Z-r41bqc_5.jsonl`).
+These were October 22 local-time tests; log filenames use UTC. They show no
+meaningful polling overhead in those two runs, not a guaranteed reliability rate.
+An earlier SD READ_FAILED at offset 34816 was not physically diagnosed; retain
+SD/USB diagnostics and use SDCHECK if it recurs.
+
+## Firmware environments and build commands
+
+| Environment | XBee UART | Camera CS | Purpose |
+| --- | ---: | --- | --- |
+| `esp32thing_plus_115200_camera_cs27` | 115200 | GPIO27 | Completed working setup |
+| `benchmark_9600_cs27` | 9600 | GPIO27 | Slow comparison without moving camera wiring |
+| `esp32thing_plus_115200` | 115200 | GPIO12 | Original camera-CS wiring, faster UART |
+| `esp32thing_plus` (default) | 9600 | GPIO12 | Original lab defaults |
+
+Run from the folder containing this `platformio.ini`:
+
+```sh
+pio run -e esp32thing_plus_115200_camera_cs27 -j 4
+pio run -e benchmark_9600_cs27 -j 4
+pio run -e esp32thing_plus_115200 -j 4
+pio run -e esp32thing_plus -j 4
+```
+
+Upload only the environment matching the physical wiring and radio UART baud:
+
+```sh
+pio run -e esp32thing_plus_115200_camera_cs27 -t upload
+```
+
+PlatformIO's name `esp32thing_plus` does not override the actual board setting.
+The selected build changes firmware UART/CS definitions, not either XBee's
+configuration. USB monitoring stays 115200 in all environments.
+
+## GPIO27 baud comparison — 2026-10-22
+
+Stop operations and disconnect the GCS. Save both XCTU profiles. For the slow
+comparison write **9600 UART baud on both radios**, upload
+`benchmark_9600_cs27`, and select 9600 in the GCS. Retain satellite AP=0,
+ground AP=1/GCS API and the same unicast, RSSI, profile and antenna settings.
+USB monitoring stays 115200. The default `esp32thing_plus` is GPIO12, not the
+GPIO27 slow environment. Restore both radio UARTs/GCS to 115200 and upload
+`esp32thing_plus_115200_camera_cs27` afterwards. No wiring change is required.
+
+## Optional 115200-baud test
+
+For original GPIO12 wiring, `esp32thing_plus_115200` is the faster UART build;
+for GPIO27 use the confirmed environment above. Set each radio's UART baud in
+XCTU, close XCTU and use matching GCS baud/mode. The local pairs that must agree
+are firmware ↔ satellite XBee and GCS ↔ ground XBee. The RF link can bridge
+different UART rates, but matching 115200 on both removes both old serial
+bottlenecks. USB monitor speed does not configure either XBee.
+
+## Speed-test installation and comparison (2026-10-27)
+
+Use matching main GCS/firmware artifacts. Camera and Remote Files share a
+**Transfer profile** preference; each operation snapshots its profile before
+starting, so changing a control cannot alter an in-flight transfer.
+
+| Profile | Useful bytes/block | Codec | Requests per batch |
+| --- | ---: | --- | ---: |
+| Baseline | 128 | Hex | 1 |
+| Larger blocks | 256 | Hex | 1 |
+| Compact | 256 | Base64 | 1 |
+| Fast | 512 | Base64 | 1 |
+| Experimental | 512 | Base64 | 2 |
+| Auto | Fast with FAST1; legacy Baseline otherwise | Negotiated | 1 |
+
+Owner-reported useful download speeds were about **1500 B/s Baseline**,
+**3850 B/s Auto/Fast**, and **4700 B/s Experimental**. These are observed results,
+not guarantees or upload benchmarks. Batch 2 sends at most two data requests
+and confirms both before another batch; it is not a two-byte block, simultaneous
+file transfers or an unbounded sliding window. Retry only unconfirmed commands
+with their original IDs. Two fixed request/reply entries retain successful data
+replies across metadata queries; a transient future-offset error is not cached.
+
+FAST1 adds `OPENX|pathHex|chunk|codec` and
+`PUTX|pathHex|size|crcHex|chunk|codec`. FILE/READY echo the agreed profile.
+`READX`/`WRITEX` use the negotiated HEX or B64 encoding. Supported choices are
+128/256-byte HEX or 128/256/512-byte B64. Base64 uses four characters per three
+bytes, compared with six for hex; it remains CRC-framed text, not raw binary UART
+traffic. All records fit the existing 1024-byte parser. Upload sync/read-back,
+whole-file checksums, no-overwrite publication and camera safeguards remain.
+Legacy HELLO/commands retain 128-byte hex. Auto falls back before opening a file;
+explicit faster profiles require FAST1. Profiles never switch silently after errors.
+
+Compare the same saved JPEG at least five times per profile, retaining the same
+radio placement, baud, addressing and RSSI setting. Export CSV and PNG in Transfer
+Stats; keep complete durations, failures, retries and actual `transfer_profile`.
+Repeat uploads with fresh destination names and include read-back completion time.
+A multi-operation recording keeps idle intervals between runs. If a profile
+fails, retain diagnostics, compare Fast without batching, then Baseline.
+See the [GCS comparison guide](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/main/docs/transfer-speed.md).
+
+## Live Preview, measurement and Link Tracker
+
+The GCS **Live Preview** tab schedules repeated still captures with supported
+resolution selection and **5/10-second start-to-start targets**. It verifies the
+SD image and download, decodes/displays it, then deletes **only that preview job's
+image**. Ordinary still photos are preserved. Save frame writes a permanent PC
+copy. The pop-out keeps native image pixels while its window resizes. Pending
+capture/delete intent can be recovered without another exposure or automatic
+restart. Larger JPEGs and camera/SD work can exceed a target; no frame backlog
+is accumulated. The guide uses reported speed tiers and a two-second overhead
+allowance; it is not a guaranteed resolution/frame-rate specification.
+
+Transfer Stats supports useful upload/download rates, optional ground RSSI,
+continuous multi-operation recordings and CSV/PNG exports. White/black graph
+formatting is independent of UI theme; RSSI can overlay rate on a separate dBm
+axis without changing raw data or replacing missing samples. Dedicated **Link
+Tracker** records received RSSI, round-trip success/latency and distance markers
+without a file transfer. It uses legacy packet RSSI or a rate-limited DB fallback.
+For 16-bit receive frames, verify the satellite **MY** source (possibly `0000`),
+not a 64-bit destination. **Open CSV bundle... / Open session folder...** rebuilds
+its saved graphs offline with explicit optional source rechecking. These are GCS
+features; no extra firmware environment or radio-programming command is needed.
+
+Guides: [preview](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/main/docs/live-preview.md),
+[statistics](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/main/docs/transfer-statistics.md),
+[recordings](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/main/docs/multi-operation-recordings.md),
+[Link Tracker](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/main/docs/link-tracker.md).
 
 ## Source reading order
 
@@ -41,229 +200,6 @@ uploads/downloads. Viewing is an on-demand download; no live preview is started.
    does not program either radio's AP, BD or destination settings.
 7. `test/test_protocol.py`: host fault injection and GCS interoperability checks.
    Compilation and simulation do not establish hardware reliability.
-
-## Speed-test installation and comparison (2026-10-27)
-
-Download **KestrelSAT-Lab8-Firmware** from a successful Actions run on
-`feature/transfer-speed` and extract the ZIP. Open the extracted folder containing
-`platformio.ini` in PlatformIO. For the confirmed GPIO27/115200 camera setup,
-upload `esp32thing_plus_115200_camera_cs27`. Keep the existing radio configuration:
-both UARTs 115200, satellite AP=0, ground AP=1/GCS API mode, working unicast
-destinations and MAC acknowledgments. USB diagnostics remain at 115200.
-
-Use the matching GCS Windows build from `feature/transfer-speed`. Camera and
-Remote Files now share a **Transfer profile** selector:
-
-| Selection | Useful bytes/block | Codec | Requests per batch |
-| --- | ---: | --- | ---: |
-| Baseline | 128 | Hex | 1 |
-| Larger blocks | 256 | Hex | 1 |
-| Compact | 256 | Base64 | 1 |
-| Fast / Auto with FAST1 | 512 | Base64 | 1 |
-| Experimental | 512 | Base64 | 2 |
-
-Download the same image at least five times per profile without changing antenna
-position, baud, RSSI polling or radio settings. Begin with polling off, then
-repeat the best stable profile with polling enabled. Repeat uploads with fresh
-destination names. Keep failures and retry counts. Export PNG and CSV using
-Transfer Statistics; `transfer_profile` identifies the actual negotiated mode in
-session/recording CSVs, including Auto fallback. Use a multi-operation recording
-to compare back-to-back runs. There is no live preview.
-
-512-byte blocks need one-quarter as many data requests as Baseline. Base64 uses
-four characters for three bytes instead of six hex characters. Actual on-air
-speed depends on RF fragmentation, turnaround, retries and SD latency; Batch 2
-may be slower on a half-duplex radio. Auto defaults to Fast without batching.
-After a failure, keep diagnostics, compare Fast without batching, then Baseline.
-
-Protocol details: CAPS adds `FAST1` while retaining its trailing `128` and legacy
-HELLO. `OPENX|pathHex|chunk|codec` and
-`PUTX|pathHex|size|crcHex|chunk|codec` accept 128/256-byte HEX or 128/256/512-byte B64.
-FILE/READY echo `chunk|codec`. READX/WRITEX use the same token/offset layout as
-READ/WRITE, with the agreed encoding in DATA/WRITEX. All frames retain CRC32 and
-stay below the existing 1024-byte limit. Base64 is compact text, not a raw binary
-UART protocol. END/VERIFY/COMMIT and whole-file verification remain unchanged.
-
-Two-entry replay storage is fixed at approximately 4 KiB. The GCS confirms both
-members of a batch before opening another, retrying only unconfirmed commands
-with their original IDs. Successful replies survive intervening metadata queries.
-A future-offset rejection after a missing preceding command is not cached; it
-can succeed after that missing command is repaired. No unbounded window is used.
-Auto detects old firmware and falls back before opening a file; old GCS clients
-continue using legacy commands with this firmware. No transfer silently changes
-profiles after an SD error, timeout or checksum mismatch.
-
-Run `python test/test_protocol.py --gcs /path/to/KestrelSAT-GCS` against the matching
-GCS branch for codec, replay, loss/corruption/reordering, file protection and
-twenty-download regression checks. Build all four environments before testing.
-See the [complete GCS comparison guide](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/feature/transfer-speed/docs/transfer-speed.md).
-
-## Earlier dated changes
-
-- **2026-10-22 — GPIO27 slow-baud benchmark:** Added `benchmark_9600_cs27`
-  for comparing 9600 with the confirmed 115200 setup while retaining camera
-  CS=GPIO27, the existing board and SD clock. Source artifacts include this
-  environment. Both radio UARTs and the GCS must match the selected baud rate;
-  the USB monitor remains at 115200.
-
-- **2026-10-22 — Hardware confirmed:** The owner confirmed camera capture and
-  GPIO27 operation and reported no remaining issues at the working stopping
-  point. Same-image unicast downloads took 22.407 s with RSSI off and 22.411 s
-  with it on, with zero protocol timeouts/retries. The confirmed setup and limits
-  are recorded below. Pull requests now run source artifact packaging checks;
-  automatic main builds are preserved.
-
-- **2026-10-22 — Camera capture recovery:** Followed the vendor capture2SD
-  read/framing approach instead of requiring FIFO bytes to equal JPEG boundaries.
-  The streaming framer handles padding, split markers and embedded thumbnail
-  markers, while retaining full SD CRC read-back. Refresh images can retry failed
-  initialization without reconnecting. Optional CAMDIAG1 metadata reports FIFO/
-  read/saved counts and boundary samples. Added an opt-in GPIO27 camera-CS
-  environment to investigate GPIO12 boot/flash interference. Startup marker is
-  `KFS1 camera-2`. Physical retesting remains required; see the procedure below.
-
-- **2026-10-21 — Remote camera:** Added CAMERA1 capability and capture/status/
-  abort jobs, JPEG-boundary and full SD CRC read-back checks, local-time/resolution
-  naming through the GCS, and last-job recovery. The copied Lab 5 driver remains
-  unchanged; an adapter bounds its waits and shares SPI with SD. Startup marker
-  is `KFS1 camera-1`. Hardware camera validation is pending.
-
-- **2026-10-21 — File management:** Added MANAGE1 capability, file-only DELETE
-  and same-folder RENAME, no-overwrite checks and retained results for lost replies.
-  Startup marker is `KFS1 manage-1`. All 24 host protocol tests and both baud-rate
-  builds passed; delete/rename hardware testing remains pending.
-- **2026-10-21 — Upload hardware result:** The project owner confirmed that the
-  matching GCS and upload firmware work together on hardware.
-
-- **2026-10-21 — Verified uploads:** Added capability negotiation, exclusive
-  temporary files, bounded write retries with SD sync, batched read-back CRC
-  verification, no-replace publication and status recovery for lost completion
-  replies. Cancel/expiry clean temporary files; reserved leftovers can be removed
-  from the GCS. Startup marker is `KFS1 upload-1`. The project owner subsequently confirmed uploads work.
-- **2026-10-21 — Stability result:** The project owner confirmed the preceding
-  read-recovery build worked on hardware. The physical cause and a measured
-  twenty-transfer acceptance result remain unconfirmed.
-- **2026-10-21 — Transfer stability diagnostic build:** Added up to three reads
-  of the same chunk before reporting a permanent failure, with position/FAT-state
-  restoration before retry. New USB diagnostics report SD errors, failed offsets,
-  timing and resets. `SDCHECK /absolute/path` scans a file locally three times
-  without radio traffic. Hardware root-cause/reliability testing remains pending.
-- **2026-10-21 — 115200 transparent link confirmed:** The project owner reported
-  successful connection and Remote Files operation using this baud-rate variant
-  with both radios in AP=0. The ground radio's legacy API output exposed a GCS
-  receive-format compatibility issue; use the updated GCS feature build when
-  testing ground AP=1. Physical API/RSSI validation remains pending.
-- **2026-10-21 — Optional 115200-baud test build:** Added the
-  `esp32thing_plus_115200` environment. The original `esp32thing_plus` environment
-  and default build remain at 9600 baud. Radio settings must be changed in XCTU
-  before using the faster UART configuration; see the procedure below.
-
-- **2026-10-20 — Hardware integration confirmed:** The project owner confirmed
-  that this firmware and the Windows KestrelSAT GCS work together on the
-  KestrelSAT/XBee hardware for the remote file-transfer milestone, using the
-  working lab board configuration and 9600-baud radio link.
-- **2026-10-15 — Remote SD file service implemented:** Added read-only directory
-  browsing and binary downloads, sequential 128-byte chunks, request retries
-  with response replay, per-frame and whole-file CRC32 checks, cancellation
-  cleanup, and idle-session expiry. Added C++/Python protocol tests and a small
-  firmware download artifact verified by ZIP extraction on Windows. The
-  packaging workflow checks out only Lab 8 to avoid legacy Windows path limits.
-
-## Download this project on Windows
-
-In this repository's **Actions** tab, open **Download Lab 8 firmware**, then open
-its latest successful run on `main`, or `feature/cs27-baud-benchmark` for the new
-9600/GPIO27 environment before it is merged. Download **KestrelSAT-Lab8-Firmware** under Artifacts.
-Sign into GitHub to download artifacts. Extract the ZIP and open its
-`KestrelSAT-Lab8` folder in PlatformIO; `platformio.ini` is directly inside it.
-This small artifact contains only this project. Its source files are verified by
-compressing/extracting them and comparing their checksums on a Windows runner.
-The workflow runs automatically when this project or its packaging workflow
-changes on `main`, `feature/remote-files`, `feature/high-baud-link`, or
-`fix/file-transfer-stability`, `feature/remote-upload`, `feature/remote-file-management`,
-`feature/remote-camera`, or `feature/cs27-baud-benchmark`, including
-merges into `main`.
-Manual runs remain available through **Run workflow**.
-Pull requests affecting this project or its workflow also validate packaging.
-
-## GPIO27 baud comparison — 2026-10-22
-
-The source ZIP on `feature/cs27-baud-benchmark` (and `main` once merged) includes
-both environments below. Use the current GCS executable and the same physical
-GPIO27 camera wiring for each test; no GCS update is required.
-
-| Test | PlatformIO environment | Satellite XBee UART / ground XBee UART / GCS baud | Camera CS |
-| --- | --- | --- | --- |
-| Slow baseline | `benchmark_9600_cs27` | 9600 | GPIO27 |
-| Confirmed faster setup | `esp32thing_plus_115200_camera_cs27` | 115200 | GPIO27 |
-
-Stop transfers and disconnect the GCS. In XCTU configure both radios' UART baud
-for the selected row, write the settings and close XCTU. Upload the matching
-firmware environment and connect the GCS at that baud. Keep satellite AP=0,
-ground AP=1/GCS API, and the chosen broadcast/unicast and RSSI test settings.
-USB Serial Monitor remains **115200** for both builds; changing its speed does
-not change the XBee UART. Keep all power off when changing wiring; no wiring
-change is needed between these environments.
-
-```sh
-pio run -e benchmark_9600_cs27
-pio run -e benchmark_9600_cs27 -t upload
-```
-
-Use the same saved JPEG, radio placement and power for comparisons. In Transfer
-Stats start a named recording per configuration, download three times with short
-idle gaps, stop recording and export rate/RSSI PNGs plus measurement and summary
-CSVs. Retain failed runs and diagnostic JSONLs. A low rate or a clean run is a
-measurement; no artificial packet loss is introduced. Restore both radio UARTs,
-GCS baud and firmware to the confirmed GPIO27/115200 setup after the slow tests.
-
-The original `esp32thing_plus` default still uses GPIO12/9600 and is not the
-GPIO27 benchmark environment. Camera/file-service code and the 25 MHz SD clock
-are shared across these builds; only the radio UART baud differs between the
-two GPIO27 configurations. Physical 9600/GPIO27 testing is required after upload.
-
-## Confirmed camera and radio setup — 2026-10-22
-
-The owner confirmed camera-2 captures work, GPIO27 works well, and the system
-reached a working stopping point. Use camera **CS=GPIO27** with
-**`esp32thing_plus_115200_camera_cs27`**, both UARTs at **115200**, satellite
-**AP=0**, ground **AP=1** with GCS API mode, and **unicast** addressing on both
-radios. RSSI polling can remain enabled. The SD clock remains at the configured
-25 MHz; no lower-clock firmware change was made during this handoff.
-
-In XCTU, save the working profiles, read each radio's SH/SL and configure:
-
-| Radio | DH | DL |
-| --- | --- | --- |
-| Ground | Satellite SH | Satellite SL |
-| Satellite | Ground SH | Ground SL |
-
-Copy the peer's hexadecimal values exactly, write both radios and reconnect the
-GCS so it reads the destination. Keep network settings and MAC acknowledgments
-enabled (MM=0 in the lab firmware). The supplied lab profile uses broadcast
-DH=0/DL=FFFF; it is not the confirmed transfer setup. Firmware does not write
-radio settings. Existing GPIO12/9600 and GPIO12/115200 environments remain available
-for the original lab wiring; do not select them with the camera CS on GPIO27.
-
-Two supplied logs download the same saved 640×480 image with unicast addressing:
-
-| Log | RSSI polling | Operation duration | Protocol timeouts/retries | Result |
-| --- | --- | --- | --- | --- |
-| `kfs-20261023T021016Z-o38jaxio.jsonl` | Off | 22.407 s | 0 / 0 | Downloaded, checksum verified |
-| `kfs-20261023T021158Z-r41bqc_5.jsonl` | On | 22.411 s | 0 / 0 | Downloaded, checksum verified |
-
-Both complete 260 READ chunks with steady progress. Polling returned a final
--21 dBm reading. One rejected protocol line during OPEN in the polling-on run
-caused no retry or measurable slowdown. UTC log filenames fall on October 23;
-the local test date was October 22. Earlier broadcast examples had missing-reply
-timeouts; this pair supports broadcast delivery contributing to pauses and shows
-no meaningful polling overhead in these two runs.
-
-The prior 83,996-byte image's SD READ_FAILED at offset 34,816 was not physically
-diagnosed; local SDCHECK results were not supplied. The owner subsequently reported
-all seemed fixed, but two successful downloads do not establish a twenty-transfer
-reliability result or eliminate every possible SD fault. Keep USB/JSONL diagnostics
-and use SDCHECK if an SD error recurs. No speculative SD-recovery change is included.
 
 ## Wiring and build
 
@@ -298,19 +234,20 @@ still fail with cleanup. The old log lacks image bytes, so the exact physical
 padding/readout fault remains unconfirmed. Single-byte reads can save more slowly
 at large resolutions; the 120-second whole-job deadline remains bounded.
 
-**GPIO12 is also the ESP32 MTDI boot strap.** A connected camera holding it high
-at reset can select 1.8 V for a board with 3.3 V flash, preventing flashing/boot.
-See [Espressif's boot-pin documentation](https://docs.espressif.com/projects/esptool/en/latest/esp32/advanced-topics/boot-mode-selection.html).
-This is a plausible cause of the reported MD5 mismatch, not proven by that error;
-power instability can also cause it. Firmware cannot control boot straps during
-ROM flashing. The lab board identifier and flash verification are preserved.
+**The confirmed camera setup uses GPIO27.** GPIO12/MTDI flash-voltage strapping
+is documented for classic ESP32 chips, but must not be assumed for another SoC
+from a pin name or environment label. The project retains its actual
+`sparkfun_esp32s2_thing_plus_c` configuration. The MD5 report alone did not
+establish a strapping or supply root cause. Firmware cannot correct hardware
+conditions during ROM flashing. Retain flash verification and the working board
+configuration; see [Espressif's chip-specific boot guidance](https://docs.espressif.com/projects/esptool/en/latest/esp32/advanced-topics/boot-mode-selection.html).
 
 An optional environment avoids this pin without changing the working lab defaults:
 
 1. Disconnect **all power**. Confirm GPIO27 is otherwise unused on your hardware.
 2. Move only the camera **CS** wire from GPIO12 to **GPIO27**; retain SD, SPI,
    supply and ground wiring.
-3. Upload **`esp32thing_plus_115200_camera_cs27`** and confirm `KFS1 camera-2`
+3. Upload **`esp32thing_plus_115200_camera_cs27`** and confirm `KFS1 speed-1`
    and `camera_cs=27` in the USB monitor. Do not select this environment with
    the camera still wired to GPIO12. Existing environments retain GPIO12.
 4. Keep working radio/AP settings. In the matching GCS Camera tab, Refresh
@@ -356,54 +293,9 @@ Check/reinsert the card and reset to retry initialization. Commands `1` (help)
 and `3` (LED toggle) remain available in the serial monitor. Lab 4's blocking RSSI
 command is not included in this file-service firmware.
 
-## Optional 115200-baud test
-
-The existing GCS already offers **115200** in its Baud Rate selector, including
-in the transfer-statistics feature build. No new GCS executable is required for
-this baud-rate option. Both transparent and AP=1 connections can use it.
-
-1. Close the GCS and stop any transfer. In XCTU, save a backup of **each radio's**
-   working configuration before changing it. Access the satellite radio through
-   its appropriate USB adapter/programming connection; the GCS does not change
-   radio settings remotely.
-2. On the **ground XBee**, set **BD — UART Baud Rate** to **115200**, write it,
-   then reconnect XCTU at 115200 if prompted. Retain its chosen AP mode: AP=1
-   for the new GCS API/RSSI feature or AP=0 for transparent mode.
-3. On the **satellite XBee**, set **BD** to **115200** and write it. Keep **AP=0**
-   (transparent mode). Preserve destination addresses, network/security settings,
-   and all other working radio parameters on both radios.
-4. In PlatformIO, select **Project Tasks → esp32thing_plus_115200 → Upload**,
-   or run the commands below. This uses the same board and pins as the working
-   lab firmware. The USB debug monitor remains at 115200 and prints the selected
-   XBee UART rate at startup; USB monitor speed alone does not change radio baud.
-5. Close XCTU, open the GCS, select **115200 baud, 8N1** and the correct ground
-   radio mode, then Connect. Start with a small file and compare it with its SD
-   original, then test a larger file and compare rate/CSV plots with a 9600 run.
-
-```sh
-pio run -e esp32thing_plus_115200
-pio run -e esp32thing_plus_115200 -t upload
-```
-
-The matching pairs are **GCS ↔ ground XBee UART** and **ESP32 firmware ↔ satellite
-XBee UART**. UART rates need not match across the RF link, but using 115200 on
-both ends removes the old 9600-baud serial bottlenecks. It does not change the RF
-bitrate or guarantee twelve times the file-transfer throughput: packet overhead,
-encoding, radio latency, retries and RSSI polling still contribute.
-
-To roll back, restore both XBees' BD settings to 9600 in XCTU, upload
-`esp32thing_plus`, and select 9600 in the GCS. Keep each end's AP mode matched to
-its software. Both build variants are compiled during development; over-the-air
-115200 connection and Remote Files operation in transparent mode were confirmed
-by the project owner on 2026-10-21. API/RSSI operation with the corrected GCS
-receive handling still requires a hardware test. The supplied ground radio uses
-legacy 802.15.4 API indicators (AO=2); keep that setting and use the updated
-[GCS feature build](https://github.com/chasedustevichusafa/KestrelSAT-GCS/tree/feature/transfer-statistics).
-
 ## Stability diagnostics — 2026-10-21
 
-Use the `fix/file-transfer-stability` source artifact and the matching GCS
-stability build. At startup the satellite USB monitor prints `KFS1 camera-2` in the current camera build,
+Use current main firmware and the matching GCS build. At startup the satellite USB monitor prints `KFS1 speed-1` in the current camera build,
 reset reason, SD SPI clock and the XBee UART baud. SD reads retry at the exact
 same byte offset up to three times, with a 10 ms pause before retries; partial
 attempts do not advance the protocol offset or checksum. Permanent failures
@@ -426,7 +318,7 @@ retaining `-D XBEE_UART_BAUD=115200` for the faster UART environment. Rebuild,
 upload and verify the printed clock. Preserve the working board/wiring and
 change one variable at a time; the lower clock is not an established fix.
 
-Follow the [GCS stability test procedure](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/fix/file-transfer-stability/docs/file-transfer-stability.md)
+Follow the [GCS stability test procedure](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/main/docs/file-transfer-stability.md)
 for comparisons of local SD, transparent radio, API without polling and API with
 RSSI polling. The GCS saves bounded metadata captures under `transfer_diagnostics/`.
 The hardware goal is at least 20 consecutive verified downloads per supported
@@ -434,13 +326,13 @@ mode including the largest failing file. Simulated tests do not meet that goal.
 
 ## Upload a file — 2026-10-21
 
-Use the matching GCS executable and source artifact on `feature/remote-file-management`.
-Select `esp32thing_plus_115200` when uploading firmware for the existing 115200
-radios. Keep the working wiring, SD clock and radio configuration. Confirm the
-satellite USB startup marker `KFS1 manage-1` in the current build.
+Use matching current main GCS and firmware artifacts.
+Select `esp32thing_plus_115200_camera_cs27` for the confirmed GPIO27/115200
+setup; use the GPIO12 variant only with original camera-CS wiring. Keep the working wiring, SD clock and radio configuration. Confirm the
+satellite USB startup marker `KFS1 speed-1` in the current build.
 
 In GCS **Remote Files**, browse to an existing destination folder and Refresh.
-The new firmware advertises `CAPS|UPLOAD1|MANAGE1|128` in the current build, enabling **Upload...** and
+The new firmware advertises `CAPS|UPLOAD1|MANAGE1|CAMERA1|CAMDIAG1|FAST1|128` in the current build, enabling **Upload...** and
 **Remove partial...**. Select a local file and choose its destination filename.
 Existing names are rejected, including case-insensitive aliases. The final name
 appears only after complete size/CRC verification of data read back from the SD.
@@ -451,7 +343,7 @@ Temporary files are named `.kfs-xxxxxxxx.part` beside the destination. Upload
 names cannot use that prefix (case-insensitive), FAT-reserved characters or
 trailing dots/spaces. Paths are limited to 192 UTF-8 bytes and must leave room
 for that temporary name; files are limited to 4 GiB minus one byte. Creation
-requires an existing folder and available space. Every 128-byte write is synced
+requires an existing folder and available space. Every data-block write (128 bytes in Baseline; negotiated in FAST1) is synced
 before ACK, with up to three attempts. Retries reopen only the session's own
 temporary file and write at the original offset. Verification processes up to
 1024 bytes per request so large files retain progress/cancellation.
@@ -472,23 +364,23 @@ the GCS records bounded metadata-only diagnostics without file payloads.
 
 New KFS1 operations are CAPS, PUT, WRITE, VERIFY, COMMIT, STATUS, ABORT and CLEAN.
 HELLO/download commands remain compatible. See the [complete upload protocol and
-hardware checklist](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/feature/remote-upload/docs/remote-upload.md).
+hardware checklist](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/main/docs/remote-upload.md).
 For acceptance, upload/download-compare empty, small, 14 KB JPEG and larger binary
 files, then test Cancel/disconnect and repeated runs with API RSSI polling on/off.
 Automated simulation and compilation do not establish physical upload reliability.
 
 ## Delete and rename files — 2026-10-21
 
-Use matching `feature/remote-file-management` firmware and GCS builds. Upload
-`esp32thing_plus_115200` for the current 115200 radios and keep their working
-AP settings. Confirm startup marker `KFS1 manage-1`. In GCS Remote Files,
+Use matching `main` firmware and GCS builds. Upload
+`esp32thing_plus_115200_camera_cs27` for GPIO27/115200 and keep the working
+AP settings. Confirm startup marker `KFS1 speed-1`. In GCS Remote Files,
 **Refresh / Open**, select a file, and choose **Rename...** or **Delete...**.
 Deletion asks for confirmation and permanently removes the selected file. Rename
 keeps the current folder and rejects existing destinations and case-only changes.
 Folders and reserved `.kfs-` upload names are excluded; use Remove partial for
 unfinished uploads. Old firmware leaves the new management buttons disabled.
 
-The service advertises `CAPS|UPLOAD1|MANAGE1|128`. New commands are DELETE with a
+The service advertises `CAPS|UPLOAD1|MANAGE1|CAMERA1|CAMDIAG1|FAST1|128`. New commands are DELETE with a
 hex path, RENAME with hex source/target paths, and RESULT with the original
 request ID. Replies are DELETED, RENAMED or ERR; RESULT returns the retained
 operation/outcome or UNKNOWN. The last management request/reply survives metadata
@@ -498,21 +390,21 @@ completion, Refresh and inspect before trying again. These SD operations are not
 power-loss transactions. Active file sessions block management; dispatched
 operations cannot be cancelled. Frames allow 1024 bytes for two 192-byte paths.
 
-All 24 host protocol tests passed, including loss/retry, idle expiry, long paths,
-backend errors, directory rejection and overwrite protection. Both firmware
-baud-rate builds passed. Test on disposable files first: rename, download/compare,
-delete and Refresh. Management hardware validation remains pending. Full setup:
-[GCS file management](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/feature/remote-file-management/docs/remote-file-management.md).
+Host protocol coverage includes loss/retry, idle expiry, long paths, backend
+errors, directory rejection and overwrite protection. The owner confirmed the
+completed file-management workflow. Test disposable files after changing a setup:
+rename, download/compare, delete and Refresh. Full setup:
+[GCS file management](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/main/docs/remote-file-management.md).
 
 ## Camera capture — 2026-10-21
 
 Extract the **matching camera** GCS executable and this source ZIP from
-`feature/remote-camera`. All required Arducam sources and the MIT license are
+`main`. All required Arducam sources and the MIT license are
 under `lib/Arducam_Mega-3.0.0`; no Lab 5 checkout is needed to build this package.
-Labs 4/5 remain unmodified references. Use PlatformIO **Project Tasks →
+Labs 4/5 application and vendor sources remain reference material. Use PlatformIO **Project Tasks →
 esp32thing_plus_115200_camera_cs27 → Upload** for the confirmed GPIO27/115200 setup;
 `esp32thing_plus_115200` retains GPIO12/115200, and the default
-`esp32thing_plus` remains 9600. Confirm USB startup marker `KFS1 camera-2` and the
+`esp32thing_plus` remains 9600. Confirm USB startup marker `KFS1 speed-1` and the
 camera sensor/model/status line. Retain existing radio AP/baud/network settings.
 
 In GCS **Camera → Refresh images**, select a supported resolution (640×480 by
@@ -550,7 +442,7 @@ available. Missing cameras do not stop the file service. Check power/wiring and
 Refresh images after fixing an initialization fault. USB prints camera and SD
 error details.
 
-CAPS becomes `CAPS|UPLOAD1|MANAGE1|CAMERA1|CAMDIAG1|128`; HELLO/file chunks remain compatible.
+CAPS becomes `CAPS|UPLOAD1|MANAGE1|CAMERA1|CAMDIAG1|FAST1|128`; HELLO/file chunks remain compatible.
 `CAMINFO` returns model, supported-resolution mask, camera error and SD state.
 `CAPTURE|job_hex|mode_index|path_hex`, `CAMSTATUS|job_hex`, and `CAMABORT|job_hex`
 return `CAMJOB|job_hex|state|done|total|crc32|path_hex|error`. Capture paths are
@@ -560,31 +452,18 @@ rejected. The GCS exposes Stop waiting and Check capture, not automatic CAMABORT
 
 Image downloads participate in existing speed/RSSI measurements. Multi-operation
 recordings include capture events; onboard capture/save is zero useful file
-throughput until a download begins. All 33 portable protocol tests pass, including
+throughput until a download begins. Portable protocol coverage includes
 loss/retry, duplicate jobs, camera/job timeouts, SD failure/corruption, collision
 protection, partial cleanup, padded real JPEGs and the production camera adapter
-with a fake bus. Both baud variants and the optional GPIO27 build compile. These
-checks do not establish physical camera operation.
+with a fake bus. The owner confirmed camera capture and GPIO27 operation; automated checks
+remain distinct from hardware reliability measurements.
 
 On hardware, first capture 320×240 or 640×480, View and check decoded dimensions,
 Download/compare copies, then rename/delete a disposable image. Test higher
 resolutions, repeated captures, Stop waiting/Check capture and reconnect. Recheck
 existing uploads/downloads/statistics. Keep USB output and GCS diagnostics on any
 failure. Full instructions and limits:
-[GCS camera guide](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/feature/remote-camera/docs/camera.md).
-
-## Hardware test
-
-Start the updated GCS executable, connect to the ground XBee COM port at 9600,
-then **Remote Files → Refresh / Open**. Browse `/`, double-click folders, select a
-file and **Download…**. Start with a small known text file, then a JPEG and a larger
-binary file. Compare downloaded contents against the SD originals. Test Cancel
-and reconnect as well. Downloads preserve SD contents; uploads require a new
-filename. Both directions restart rather than resume.
-The original Lab 4/5 firmware does not implement these commands.
-
-See the GCS repository's `docs/remote-files.md` for the Windows build/download
-steps, protocol limits, and detailed user instructions.
+[GCS camera guide](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/main/docs/camera.md).
 
 ## Protocol
 
@@ -593,14 +472,18 @@ adapts it to SdFat and the Lab 4 XBee UART. There are no heap-sized file buffers
 Only one file is held open. Normal heartbeat text is suppressed for 30 seconds
 after protocol activity; idle sessions close after that interval.
 
+The table below describes the **legacy 128-byte hex commands**, retained for
+Baseline/old-client compatibility. FAST1 extends them as described above.
+
 Wire form (ASCII, newline terminated):
 
 ```text
 @KFS1|<8-digit hex request ID>|<operation>|<fields...>|<8-digit CRC32>\n
 ```
 
-CRC32 is IEEE/zlib, over all bytes before the last `|`. Paths, names, and data are
-hex-encoded UTF-8/bytes. This keeps `+++` out of protocol traffic. The GCS sends a
+CRC32 is IEEE/zlib, over all bytes before the last `|`. Paths/names and legacy
+data are hex-encoded UTF-8/bytes; FAST1 data uses its negotiated encoding.
+Legacy hex encoding keeps `+++` out of the data payload. The GCS sends a
 leading newline before each request to recover a truncated preceding command.
 
 | Request fields | Response fields |
@@ -613,7 +496,8 @@ leading newline before each request to recover a truncated preceding command.
 | `CLOSE\|session_token` | `CLOSED` |
 
 Errors are `ERR|CODE`. The token is the OPEN request ID. READ must advance
-sequentially; only the last identical request is replayed on retries. END verifies
+sequentially; legacy requests can be replayed on retries. FAST1 data operations retain two
+request/reply entries for the bounded batch mode. END verifies
 that all bytes were read, returns the whole-file checksum, and closes the file.
 Upload and management commands extend this base protocol (see above).
 Maximum path: 192 bytes; maximum frame buffer: 1024 bytes; maximum file: 4 GiB minus one byte. Do not change card contents during
@@ -634,3 +518,22 @@ exercise it through a PTY with the real Python client. They inject dropped,
 corrupted, duplicated and truncated replies and verify cancellation, partial-file
 cleanup, checksum failure, empty files, and binary downloads. These checks do not
 replace an over-the-air hardware test.
+
+## Completion and validation record — 2026-11-04
+
+The completed main firmware includes UPLOAD1, MANAGE1, CAMERA1, CAMDIAG1 and
+FAST1. The current USB startup marker is **KFS1 speed-1**; camera-1/camera-2,
+manage-1 and upload-1 describe earlier milestones, not the current required build.
+The owner confirmed camera/GPIO27, file operations, speed profiles and preview;
+Link Tracker/graph replay are implemented in the GCS. All four environments are
+retained for reproducible wiring/baud comparisons. Vendored camera sources and
+licenses remain unchanged.
+
+Compile all selected environments and run the host protocol command above after
+firmware changes. For a hardware check, Refresh files, download/compare a known
+file, upload under a new name, download/compare it, then rename/delete a disposable
+copy. Capture and View 320×240 or 640×480 before larger images; exercise preview,
+Stop/Check capture, reconnect and pending-frame recovery. Save CSVs/JSONLs and
+USB output on errors. Repeat enough operations to characterize your actual
+setup. Build/simulation results and owner-reported working tests do not establish
+a universal radio range, guaranteed refresh rate or measured failure probability.

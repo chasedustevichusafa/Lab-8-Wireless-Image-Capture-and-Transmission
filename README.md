@@ -1,140 +1,139 @@
 # Lab 8: Wireless Image Capture and Transmission
 
-KestrelSAT firmware and course reference material for capturing still images
-and transferring files over XBee. Live image preview remains future work.
+Completed KestrelSAT firmware and course references for verified SD-card file
+transfers, Arducam Mega JPEG capture and periodic preview over XBee, paired with
+[KestrelSAT GCS](https://github.com/chasedustevichusafa/KestrelSAT-GCS).
 
-The current working milestone is **remote JPEG capture, SD-card browsing and verified file uploads/downloads**
-using the KestrelSAT GCS Camera and Remote Files tabs.
-The project owner confirmed that the GCS and Lab 8 firmware work together on the
-KestrelSAT/XBee hardware on **October 20, 2026**.
+**Project completion documentation: November 4, 2026 (America/Denver).**
+The owner confirmed the working GCS/firmware integration, file management, camera,
+speed improvements, preview and RSSI tracking. Use the merged `main` versions of
+both repositories. Live Preview and Link Tracker are GCS features using this
+firmware's existing camera/file/HELLO operations; they do not require a separate
+preview firmware or a satellite RSSI-streaming mode.
 
-## Projects
+## Choose the correct project
 
-**2026-10-27 — Transfer-speed test branch:** `feature/transfer-speed` adds optional
-larger chunks, Base64 and two-request batches to the current Lab 8 firmware.
-Use the matching GCS branch and the
-[installation/comparison procedure](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#speed-test-installation-and-comparison-2026-10-27).
-The known baud/CS environments and legacy transfers remain available. Hardware
-speed results are pending.
-
-**2026-10-23 — Source documentation:** The Lab 8 application now has detailed
-comments covering the protocol, SD backend, camera state machine and hardware
-boundaries. See its [source reading order](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#source-reading-order).
-Executable code and environment settings are unchanged; transfer-speed
-experiments are not included. The packaging workflow also builds this
-documentation branch while retaining automatic main artifacts.
-
-| Project | Purpose |
+| Project | Role |
 | --- | --- |
-| [Lab 8 firmware](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md) | Current SD browser and verified upload/download service; upload this project for the GCS Remote Files tab. |
-| [Lab 4](Astro-331-2026-Fall/Astro331_Lab4_Code) | Original communications and SD-card lab reference. |
-| [Lab 5](Astro-331-2026-Fall/Astro331_Lab5_Code) | Original Arducam Mega capture lab reference. |
+| [Lab 8](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md) | Deployed PlatformIO firmware: KFS1 SD browsing, verified upload/download, rename/delete, capture/recovery and negotiated speed profiles. |
+| [Lab 4](Astro-331-2026-Fall/Astro331_Lab4_Code) | Original telemetry/XBee/SD reference; not the deployed GCS file service. |
+| [Lab 5](Astro-331-2026-Fall/Astro331_Lab5_Code) | Original Arducam Mega reference; not the deployed GCS file service. |
 
-## Download and run
+Labs 4/5 source and vendor libraries are retained as references. The Lab 8 source
+package includes its own required Arducam library and license; a Lab 5 checkout
+is not needed to build it. Detailed application comments and the
+[source reading order](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#source-reading-order)
+explain how the final firmware works.
 
-1. Open this repository's **Actions → Download Lab 8 firmware** and select its
-   latest successful run on `main`, or `feature/cs27-baud-benchmark` for the new
-   9600/GPIO27 environment before merge. Sign into GitHub and download **KestrelSAT-Lab8-Firmware**
-   under **Artifacts**. This small package avoids the full repository's legacy
-   files and long Windows paths.
-2. Extract the ZIP and open **KestrelSAT-Lab8** in PlatformIO. The folder contains
-   `platformio.ini`. For the confirmed camera setup with camera CS on GPIO27,
-   build/upload `esp32thing_plus_115200_camera_cs27`. Original lab defaults remain
-   available as `esp32thing_plus` (GPIO12/9600); match firmware to physical wiring.
-3. Run the updated GCS executable, connect to the ground XBee COM port at
-   **115200 baud, 8N1**, ground AP=1/GCS API mode and satellite AP=0, then choose
-   **Camera → Refresh images** or **Remote Files → Refresh / Open**.
-4. Browse folders, select a file, choose **Download...**, and wait for
-   **Verified and saved**.
+## Download, configure and upload
 
-Keep the working board configuration, wiring, radio pairing, and SD card from the
-labs. The file service supports progress, cancellation, retries, and CRC32
-verification. Uploads use temporary files and preserve existing names; both directions restart after interruption. The Camera tab adds single-image capture; live streaming remains future work. See the
-[Lab 8 README](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md) for wiring, protocol,
-limits, build commands, and tests.
+1. Sign into GitHub and open [Actions → Download Lab 8 firmware](https://github.com/chasedustevichusafa/Lab-8-Wireless-Image-Capture-and-Transmission/actions/workflows/lab8-firmware.yml).
+   Choose a successful **main** run containing the desired commit and download
+   **KestrelSAT-Lab8-Firmware** from **Artifacts**.
+2. Extract the ZIP and open its **KestrelSAT-Lab8** folder in PlatformIO; that
+   folder directly contains `platformio.ini`. The small package avoids legacy
+   whole-repository Windows path issues. It contains **source**, not a prebuilt
+   flash image or an automatic radio programmer.
+3. For the confirmed camera wiring choose **Project Tasks →
+   esp32thing_plus_115200_camera_cs27 → Upload**. Do not use the default environment
+   with a GPIO27 camera: the default is still GPIO12/9600.
+4. Write each radio's UART/AP/address settings in XCTU as shown below; retain
+   the working network/security settings. Close XCTU and any Serial Monitor that
+   owns the port before opening the GCS.
+5. Download/extract the GCS executable from a successful main
+   [Windows test build](https://github.com/chasedustevichusafa/KestrelSAT-GCS/actions/workflows/build-windows.yml).
+   Connect to the ground radio at **115200, 8N1, XBee API (AP=1)**. Use
+   **Remote Files → Refresh / Open**, then **Camera → Refresh images**.
 
-## Optional faster UART link — 2026-10-21
+| Firmware environment | XBee UART baud | Camera CS | Use |
+| --- | ---: | --- | --- |
+| `esp32thing_plus_115200_camera_cs27` | 115200 | GPIO27 | Confirmed operating configuration |
+| `benchmark_9600_cs27` | 9600 | GPIO27 | Slow-baud comparison with the same camera wire |
+| `esp32thing_plus_115200` | 115200 | GPIO12 | Original camera-CS wiring at faster UART baud |
+| `esp32thing_plus` (default) | 9600 | GPIO12 | Original lab defaults |
 
-**2026-10-22 GPIO27 benchmark:** The firmware source package on
-`feature/cs27-baud-benchmark` (and `main` once merged) now includes
-`benchmark_9600_cs27` for **9600 baud with camera CS on GPIO27**. Use
-`esp32thing_plus_115200_camera_cs27` for the matching 115200 comparison. Set both
-radio UARTs and the GCS to the selected rate; USB monitoring remains 115200.
-See [the build/upload and graph-recording procedure](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#gpio27-baud-comparison--2026-10-22).
+All environments retain board `sparkfun_esp32s2_thing_plus_c`, Arduino framework,
+25 MHz SD SPI and a **115200-baud USB monitor**. The USB baud is independent of
+the selected radio UART baud. Firmware selection does not reprogram an XBee.
 
-For the 115200-baud test, select the `esp32thing_plus_115200` firmware environment,
-configure both radios' UART baud settings in XCTU, and select 115200 in the GCS.
-The normal firmware environment remains at 9600. See the
-[setup and rollback instructions](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#optional-115200-baud-test).
-This changes UART speed, not the radio's RF bitrate; verify transfer contents
-and compare measured rates on the hardware.
+## Confirmed radio and camera setup
 
-## Remote camera capture — 2026-10-21
+- Satellite XBee: **115200**, **AP=0** (transparent).
+- Ground XBee: **115200**, **AP=1**; select the same baud/API mode in the GCS.
+- Camera CS: **GPIO27**, with the matching firmware environment.
+- Unicast: **ground DH/DL = satellite SH/SL**, **satellite DH/DL = ground SH/SL**.
+  Copy the peer's hexadecimal serial address exactly; retain MAC acknowledgments.
+- Retain the lab's working supply, common ground, network and security settings.
 
-**2026-10-22 hardware confirmation:** The owner confirmed camera capture and
-GPIO27 operation and reported a working stopping point. Use
-`esp32thing_plus_115200_camera_cs27` and unicast destinations on both radios,
-with RSSI polling enabled if desired. Two same-image unicast downloads completed
-in 22.407 s and 22.411 s, polling off/on respectively, with zero protocol
-timeouts/retries. See the [confirmed configuration and measured limits](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#confirmed-camera-and-radio-setup--2026-10-22).
+AP=0 passes serial bytes. AP=1 adds structured frames on the local computer/radio
+UART for addressing, receive metadata, transmit status and AT queries; the ground
+radio removes/adds that framing, so the satellite can remain transparent.
+AP mode is separate from destination addressing and does not change RF bitrate.
+The supplied lab profile's **DH=0/DL=FFFF is broadcast**, not the confirmed unicast
+transfer setup. Legacy AO receive indicators are supported by the current GCS.
 
-**2026-10-22 follow-up:** Camera-2 corrects FIFO/JPEG framing and uses the vendor
-SD-example read method, retries failed detection through Refresh, and adds byte
-count/boundary diagnostics. An optional GPIO27 CS environment supports testing
-the GPIO12 boot-strap explanation for camera-connected flash MD5 errors. See
-[the upload/wiring and capture-retest procedure](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#camera-uploaddetection-failures--2026-10-22).
+See [wiring, flashing recovery and protocol details](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md).
+Disconnect power before changing wiring. Earlier camera-attached flashing and
+JPEG framing issues were addressed with the confirmed GPIO27 setup and the
+bounded JPEG extraction implementation; follow the detailed guide if they recur.
 
-Use matching GCS and firmware downloads from `main` after merge, or
-`feature/remote-camera` while testing. Upload `esp32thing_plus_115200_camera_cs27`
-for the confirmed GPIO27 setup, keeping the working baud/AP/unicast settings.
-The new GCS **Camera** page selects supported resolutions, captures a JPEG to SD,
-and then provides View, Download, Rename and Delete. Filenames use the GCS local
-request time, UTC offset, resolution and a unique suffix. View downloads a saved
-file; no live preview is started. Camera operation has been confirmed by the owner;
-the measured transfer pair is not a long-duration reliability study.
+## Completed GCS workflows
 
-See [Lab 8 camera setup](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#camera-capture--2026-10-21).
+- **Remote Files:** SD browser; verified uploads/downloads; cancellation; protected
+  rename/delete; reserved partial-upload cleanup. Interrupted transfers restart.
+- **Camera:** supported-resolution selection, JPEG capture to SD, View/Download,
+  Rename/Delete and pending-job recovery. Names contain **GCS local request time**,
+  UTC offset, resolution and a unique job suffix, rather than satellite RTC time.
+- **Live Preview:** on-demand 5/10-second capture/download targets, automatic
+  removal of successfully displayed preview-only SD frames, Save frame and a
+  resizable native-pixel pop-out. Refresh targets depend on JPEG size and speed.
+- **Transfer Stats:** live rate/RSSI, multi-operation recordings, CSV/summary/event
+  exports, white/black graphs and an optional right-axis RSSI overlay.
+- **Link Tracker:** dedicated RSSI, round-trip success/latency and distance
+  checkpoints; CSV bundles reopen offline to rebuild/export graphs. For 16-bit
+  receive frames, the expected source is the satellite's **MY**, possibly `0000`,
+  not its 64-bit SH/SL. This is a GCS receive-source check, not a firmware change.
 
-## Dated changes
+Full operation and analysis instructions are in the
+[GCS README](https://github.com/chasedustevichusafa/KestrelSAT-GCS/blob/main/README.md).
 
-- **2026-10-22 — Hardware result and handoff:** Recorded confirmed camera/GPIO27
-  operation, unicast setup and same-image RSSI off/on results. Documented the
-  working 115200/API setup and retained the original lab environments. The source
-  artifact workflow now checks pull requests as well as pushes to main/feature
-  branches and validates all packaged source checksums.
+## Speed profiles and results
 
-- **2026-10-21 — Camera capture:** Integrated the Lab 5 Arducam Mega driver with
-  bounded control waits, cooperative capture/save/read-back, unique local-time
-  filenames and retained job status. Packaging includes the standalone camera
-  library and license. Both baud variants compile; physical camera testing is pending.
+Baseline uses 128-byte hex blocks; Larger blocks uses 256-byte hex; Compact uses
+256-byte Base64; Fast uses 512-byte Base64; Experimental uses the same 512-byte
+Base64 with **two requests per batch**. Auto negotiates Fast with FAST1 firmware
+and falls back to Baseline with older firmware. CRC32 checks, SD sync/read-back,
+request replay and overwrite protection remain in place.
 
-- **2026-10-21 — File management:** Added MANAGE1 capability, file-only DELETE
-  and same-folder RENAME, no-overwrite checks and retained results for lost replies.
-  Startup marker is `KFS1 manage-1`. All 24 host protocol tests and both baud-rate
-  builds passed; delete/rename hardware testing remains pending.
-- **2026-10-21 — Upload hardware result:** The project owner confirmed that the
-  matching GCS and upload firmware work together on hardware.
+The owner reported approximately **1500 B/s Baseline**, **3850 B/s Auto/Fast**,
+and **4700 B/s Experimental** on the working setup. These are observed useful
+download rates, not guaranteed rates, upload measurements or an RF bitrate.
+Compare the same saved file and placement; retain failures and retries as well
+as average rate. Use `benchmark_9600_cs27` to compare the old UART rate without
+moving the camera CS wire; match both radio UARTs and GCS baud, then restore the
+115200 environment/settings afterwards.
 
-- **2026-10-21 — Verified upload feature:** Added UPLOAD1 capability, bounded
-  chunk writes, SD read-back verification, no-replace publication, lost-completion
-  recovery and reserved partial-file cleanup. The project owner subsequently confirmed uploads work.
-- **2026-10-21 — Stability build hardware result:** The project owner confirmed
-  the SD-read recovery build worked on hardware; a measured twenty-transfer
-  acceptance result and physical failure source were not established.
-- **2026-10-21 — Transfer stability diagnostic build:** On
-  `fix/file-transfer-stability`, added bounded SD read retries at the same byte
-  offset, detailed USB error output and `SDCHECK` local read/CRC passes. Automated
-  fault injection reproduces the old failure and verifies recovery; the physical
-  failure source and hardware reliability target remain under investigation.
-- **2026-10-21 — 115200 transparent link confirmed:** The project owner reported
-  successful connection and Remote Files operation with the faster firmware and
-  both radios in transparent mode. The ground radio's legacy API receive format
-  required a GCS compatibility fix; physical API/RSSI testing remains pending.
-- **2026-10-20 — Hardware integration confirmed:** The project owner reported
-  successful operation of the Windows GCS and Lab 8 firmware together. Added
-  this repository overview and recorded the integration status in the project
-  documentation.
-- **2026-10-15 — File-transfer milestone implemented:** Added the combined Lab 8
-  PlatformIO project, KFS1 SD browser/download protocol, and cross-language
-  tests. Added a Windows-verified firmware packaging workflow with a small
-  downloadable project ZIP. Labs 4 and 5 remain available as references.
+## Artifacts, older versions and validation
+
+The source workflow validates required files and Windows ZIP extraction/checksums
+and retains firmware artifacts for **30 days**. It does **not** compile or flash
+firmware. Main/project pull requests and relevant main pushes run packaging;
+**Run workflow** can rebuild a selected available ref. GCS test artifacts have a
+separate **14-day** retention. Old unexpired runs remain downloadable; after
+artifact expiry, use Git source history and a compatible build environment.
+Record both repositories' commit IDs and radio profiles for reproducibility.
+
+The [Lab 8 README](Astro-331-2026-Fall/Astro331_Lab8_Code/README.md#automated-compatibility-tests)
+provides all four compilation commands and the C++/Python protocol test command.
+Compilation, host fault injection and owner-reported operation are distinct
+forms of evidence. The completed project does not establish a guaranteed radio
+range or failure-free behavior for every SD card, supply, scene or antenna setup.
+
+## Completion record — 2026-11-04
+
+Documented all merged features, the confirmed GPIO27/115200/API/unicast setup,
+reported speed tiers, preview and source-verified RSSI/offline graph workflow.
+Removed obsolete branch-only installation and superseded pending-feature text.
+Updated the source package's own README so downloaded firmware remains usable
+without this repository overview. Historical Lab 4/5 instructions now identify
+their reference role and point to the final service.

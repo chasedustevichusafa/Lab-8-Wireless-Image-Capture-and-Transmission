@@ -1,11 +1,14 @@
+# Lab 4 reference test directory
 
-This directory is intended for PlatformIO Test Runner and project tests.
+Updated November 4, 2026. This original lab directory contains no implemented
+unit tests; PlatformIO's generated template is not evidence of test coverage.
+From the Lab 4 project directory, `pio run -e esp32thing_plus -j 4` checks
+compilation against its existing board configuration. Hardware behavior requires
+the lab equipment and procedure.
 
-Unit Testing is a software testing method by which individual units of
-source code, sets of one or more MCU program modules together with associated
-control data, usage procedures, and operating procedures, are tested to
-determine whether they are fit for use. Unit testing finds problems early
-in the development cycle.
-
-More information about PlatformIO Unit Testing:
-- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+The completed file/camera firmware and its real host interoperability tests are
+in [Lab 8](../../Astro331_Lab8_Code/README.md#automated-compatibility-tests).
+Run its `test/test_protocol.py --gcs /path/to/KestrelSAT-GCS -v` from the Lab 8
+project with the required Python dependencies, POSIX PTY support and C++ compiler.
+These checks do not run automatically just because this reference directory is
+named `test`, and they do not replace physical camera/radio tests.
